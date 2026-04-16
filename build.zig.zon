@@ -1,0 +1,12 @@
+.{
+    .name = .nvim_ui_client,
+    .version = "0.0.0",
+    .fingerprint = 0x3cc351f6bc3583ba, // Changing this has security and trust implications.
+
+    .minimum_zig_version = "0.16.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
