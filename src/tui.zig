@@ -1,0 +1,423 @@
+const std = @import("std");
+const RPC = @import("RPC.zig");
+const UIState = @import("UIState.zig");
+const mpack = @import("mpack.zig");
+const server = @import("server.zig");
+const Parser = @import("vaxis/Parser.zig");
+const ctlseqs = struct {
+    pub const home = "\x1b[H";
+    pub const cup = "\x1b[{d};{d}H";
+    pub const sgr_reset = "\x1b[m";
+    pub const erase_below_cursor = "\x1b[J";
+};
+
+const Self = @This();
+
+io: std.Io,
+gpa: std.mem.Allocator,
+parser: Parser,
+child: std.process.Child = undefined,
+winsize: Parser.Winsize = .{ .rows = 25, .cols = 80, .x_pixel = 0, .y_pixel = 0 },
+
+// TODO: reconsider this:
+enc_buf: std.Io.Writer.Allocating,
+
+quitting: bool = false,
+signal_stopped: bool = false,
+
+// buf only for cell rendering. high prio messages might be sent directly
+// or use another buf
+render: struct {
+    buf: std.Io.Writer.Allocating,
+    // this is the position emitting buf would take you to. might
+    // want another for "assumed start position"
+    pos_r: u32 = 0,
+    pos_c: u32 = 0,
+    attr_id: ?u32 = null,
+    const Render = @This();
+
+    pub fn print(self: *Render, comptime fmt: []const u8, vals: anytype) !void {
+        try self.buf.writer.print(fmt, vals);
+    }
+    pub fn put(self: *Render, str: []const u8) !void {
+        try self.buf.writer.writeAll(str);
+    }
+
+    pub fn cup(self: *Render, row: u32, col: u32) !void {
+        try self.print(ctlseqs.cup, .{ row + 1, col + 1 });
+    }
+},
+
+decoder: mpack.SkipDecoder = undefined,
+rpc: RPC,
+tty_writer: *std.Io.Writer,
+
+fn makeRawTTY(fd: std.posix.fd_t) !std.posix.termios {
+    const state = try std.posix.tcgetattr(fd);
+    var raw = state;
+    // see termios(3)
+    raw.iflag.IGNBRK = false;
+    raw.iflag.BRKINT = false;
+    raw.iflag.PARMRK = false;
+    raw.iflag.ISTRIP = false;
+    raw.iflag.INLCR = false;
+    raw.iflag.IGNCR = false;
+    raw.iflag.ICRNL = false;
+    raw.iflag.IXON = false;
+
+    raw.oflag.OPOST = false;
+
+    raw.lflag.ECHO = false;
+    raw.lflag.ECHONL = false;
+    raw.lflag.ICANON = false;
+    raw.lflag.ISIG = false;
+    raw.lflag.IEXTEN = false;
+
+    raw.cflag.CSIZE = .CS8;
+    raw.cflag.PARENB = false;
+
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    try std.posix.tcsetattr(fd, .FLUSH, raw);
+    return state;
+}
+
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+    var mega_buffer: [512]u8 = undefined;
+
+    const tty_fd = 2; // fubbit, do the full fd and /dev/tty dance
+
+    const termios = try makeRawTTY(tty_fd);
+    defer std.posix.tcsetattr(tty_fd, .FLUSH, termios) catch |err| std.debug.print("couldn't restore terminal: {}", .{err});
+
+    const tty_read: std.Io.File = .{ .handle = tty_fd, .flags = .{ .nonblocking = false } };
+    const tty_write: std.Io.File = .{ .handle = tty_fd, .flags = .{ .nonblocking = false } };
+    var writer = tty_write.writerStreaming(init.io, &mega_buffer);
+    var self: Self = .{
+        .parser = .{},
+        .rpc = try .init(gpa),
+        .tty_writer = &writer.interface,
+        // .loop = try xev.Loop.init(.{}),
+        .gpa = gpa,
+        .io = init.io,
+        .enc_buf = .init(gpa),
+        .render = .{ .buf = .init(gpa) },
+    };
+
+    // self.winsize = try vaxis.Tty.getWinsize(self.tty.fd);
+    // try vaxis.Tty.notifyWinsize(.{ .callback = on_winch, .context = @ptrCast(&self) });
+
+    // try vx.enterAltScreen(ttyw);
+    // defer vx.deinit(gpa, ttyw);
+
+    // XX: encoder will be set with data when it is available
+    self.decoder = mpack.SkipDecoder{ .data = undefined };
+
+    var nvim: ?[]const u8 = null;
+    var argv_rest = init.minimal.args.vector[1..];
+    if (argv_rest.len >= 2 and std.mem.eql(u8, std.mem.span(argv_rest[0]), "--nvim")) {
+        nvim = std.mem.span(argv_rest[1]);
+        argv_rest = argv_rest[2..];
+    }
+    try self.attach(nvim, argv_rest, self.winsize.cols, self.winsize.rows);
+    const nvim_read: std.Io.File = self.child.stdout.?;
+
+    // WOW they actually implemted something very useful: essentially
+    // a mini-event loop which "just" tracks N fd:s and a resizing
+    // buffer for each, GOOD JOB ZIG CORE DEVS:)
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader: std.Io.File.MultiReader = undefined;
+    multi_reader.init(gpa, init.io, multi_reader_buffer.toStreams(), &.{ nvim_read, tty_read });
+    defer multi_reader.deinit();
+
+    const nvim_reader = multi_reader.reader(0);
+    const tty_reader = multi_reader.reader(1);
+
+    var tty_available_last: usize = 0;
+    var nvim_available_last: usize = 0;
+    while (multi_reader.fill(256, .none)) |_| {
+        // TODO: check EOF
+        const tty_buffered = tty_reader.buffered();
+        if (tty_buffered.len > tty_available_last) {
+            const read = try self.ttyReadCb(tty_buffered);
+            tty_reader.toss(read);
+            tty_available_last = tty_reader.bufferedLen();
+        }
+
+        // TODO: nvim EOF
+        if (false) {
+            std.debug.print("nvim EOF!\n", .{});
+            break;
+        }
+        const nvim_buffered = nvim_reader.buffered();
+        if (nvim_buffered.len > nvim_available_last) {
+            const read = self.nvimReadCb(nvim_buffered);
+            nvim_reader.toss(read);
+            nvim_available_last = nvim_reader.bufferedLen();
+        }
+
+        if (self.quitting) break;
+
+        if (self.signal_stopped) {
+            // XXX: this is a bit of a hack. preferably the event loop should natively
+            // handle signals as events
+            self.signal_stopped = false;
+            // try self.checkResize();
+        }
+    } else |err| {
+        // TODO;
+        return err;
+    }
+}
+
+fn ttyReadCb(
+    self: *Self,
+    buf: []const u8,
+) !usize {
+    // std.debug.print("Nommm {}\r\n", .{n});
+    var seq_start: usize = 0;
+    while (seq_start < buf.len) {
+        const result = self.parser.parse(buf[seq_start..buf.len], undefined) catch {
+            std.debug.print("??parser panik\r\n", .{});
+            return error.PANIK;
+        };
+        if (result.n == 0) {
+            // cannot parse more, return how much we consumed
+            return seq_start;
+        }
+        seq_start += result.n;
+
+        const event = result.event orelse continue;
+
+        switch (event) {
+            .key_press => |k| {
+                self.handleKeyPress(k);
+                self.flush_input() catch @panic("RETURN TO SENDER");
+            },
+            else => std.debug.print("event {}\r\n", .{event}),
+        }
+    }
+
+    if (false and buf.size > 0 and buf[0] == 3) {
+        self.loop.stop();
+        return .disarm;
+    }
+
+    return seq_start;
+}
+
+fn handleKeyPress(self: *Self, k: Parser.Key) void {
+    const Key = Parser.Key;
+    if (k.text) |text| {
+        self.enqueueInput(text);
+    } else if (k.codepoint < 32) {
+        self.enqueueInput(&.{@intCast(k.codepoint)});
+    } else if (k.codepoint >= 127 and k.mods.ctrl == false and k.mods.alt == false and k.mods.shift == false) {
+        const string = switch (k.codepoint) {
+            127 => "bs",
+            Key.page_up => "PageUp",
+            Key.page_down => "PageDown",
+            Key.home => "Home",
+            Key.end => "End",
+            Key.f3 => "F3",
+            else => null,
+        };
+        if (string) |s| {
+            var buf: [128]u8 = undefined;
+            const key = std.fmt.bufPrint(&buf, "<{s}>", .{s}) catch unreachable;
+            self.enqueueInput(key);
+        } else std.debug.print("keypress {}\r\n", .{k});
+    } else if (k.mods.ctrl == true and k.mods.alt == false and k.codepoint >= 'a' and k.codepoint <= 'z') {
+        self.enqueueInput(&.{@intCast(k.codepoint - 'a' + 1)});
+    } else {
+        std.debug.print("keypress {}\r\n", .{k});
+    }
+}
+
+fn attach(self: *Self, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width: u32, height: u32) !void {
+    var the_fd: ?i32 = null;
+    if (false) {
+        the_fd = try std.posix.dup(0);
+    }
+
+    self.child = try server.spawn(self.gpa, self.io, nvim_exe, args, the_fd);
+
+    const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
+    try RPC.attach(encoder, width, height, if (the_fd) |_| @as(i32, 3) else null, false);
+    try self.flush_input();
+}
+
+fn flush_input(self: *Self) !void {
+    self.child.stdin.?.writeStreamingAll(self.io, self.enc_buf.writer.buffered()) catch |err| switch (err) {
+        error.BrokenPipe => {
+            // Nvim exited. we will handle this later
+            @panic("handle nvim exit somehowe reasonable");
+        },
+        else => |e| return e,
+    };
+    _ = self.enc_buf.writer.consumeAll();
+}
+
+fn enqueueInput(self: *Self, str: []const u8) void {
+    // dbg("aha: {s}\n", .{str});
+    const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
+    RPC.unsafe_input(encoder, str) catch @panic("memory error");
+}
+
+fn on_winch(context: *anyopaque) void {
+    const self: *Self = @ptrCast(@alignCast(context));
+    self.signal_stopped = true;
+}
+
+fn checkResize(self: *Self) !void {
+    const new_size = try @This().Somehow.Tty.getWinsize(self.tty.fd);
+    if (new_size.rows != self.winsize.rows or new_size.cols != self.winsize.cols) {
+        self.winsize = new_size;
+
+        const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
+        RPC.try_resize(encoder, 1, self.winsize.cols, self.winsize.rows) catch @panic("memory error");
+        try self.flush_input();
+    }
+}
+
+fn nvimReadCb(
+    self: *Self,
+    buf: []const u8,
+) usize {
+    self.decoder.data = buf;
+    self.rpc.process(&self.decoder) catch @panic("go crazy yea");
+    // TODO: this is a little messy. rework mpack.SkipDecoder to work nicely with
+    // std.Io.Reader style buffering
+    const consumed = buf.len - self.decoder.data.len;
+    self.decoder.data = undefined;
+
+    return consumed;
+}
+
+pub fn attr_slice(self: *Self, id: u32) []const u8 {
+    if (id > 0 and id < self.rpc.ui.attrs.items.len) {
+        // TODO: cached slices are still cool, but we should build them using vaxis
+        const islice = self.rpc.ui.attrs.items[id];
+        return self.rpc.ui.attr_arena.items[islice.start..islice.end];
+    }
+    return ctlseqs.sgr_reset;
+}
+
+pub fn cb_grid_clear(self: *Self, grid_id: u32) !void {
+    _ = self.render.buf.writer.consumeAll();
+    if (grid_id != 1) return;
+    try self.render.put(ctlseqs.home ++ ctlseqs.erase_below_cursor);
+    self.render.pos_r = 0;
+    self.render.pos_c = 0;
+}
+
+const csr = "\x1b[{};{}r";
+// TODO: safe to just ENTER 69 on startup (restore on exit);
+const enter_lrmm = "\x1b[?69h";
+const exit_lrmm = "\x1b[?69l";
+const smglr = "\x1b[{};{}s";
+
+fn grid(self: *Self) ?*UIState.Grid {
+    return self.rpc.ui.grid(1);
+}
+
+pub fn cb_grid_scroll(self: *Self, grid_id: u32, top: u32, bot: u32, left: u32, right: u32, rows: i32) !void {
+    std.debug.print("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid_id, top, bot, left, right, rows });
+    const g = self.grid() orelse return;
+    const render = &self.render;
+    const top_bot = true;
+    const left_right = left > 0 or right < g.cols;
+
+    if (top_bot) {
+        try render.print(csr, .{ top + 1, bot });
+    }
+    if (left_right) {
+        try render.print(enter_lrmm ++ smglr, .{ left + 1, right });
+    }
+    try render.cup(top, left);
+    try render.put(ctlseqs.sgr_reset);
+    if (rows > 0) {
+        try render.print("\x1b[{}M", .{rows});
+    } else if (rows < 0) {
+        try render.print("\x1b[{}L", .{-rows});
+    }
+    if (top_bot) {
+        try render.put("\x1b[r");
+    }
+    if (left_right) {
+        try render.put("\x1b[s" ++ exit_lrmm);
+    }
+    render.pos_r = invalid_fixme;
+    render.pos_c = invalid_fixme;
+}
+
+const invalid_fixme = 0xFFFFFFFF;
+
+// note: RPC callbacks happen in the nvim read callback. heavy work need to be scheduled..
+pub fn cb_grid_line(self: *Self, grid_id: u32, row: u32, start_col: u32, end_col: u32) !void {
+    // dbg("boll: {} {}, {}-{}\n", .{ grid_id, row, start_col, end_col });
+    _ = grid_id;
+    const render = &self.render;
+    const ui = &self.rpc.ui;
+    const g = ui.grid(1) orelse return;
+    const basepos = row * g.cols;
+
+    if (render.buf.writer.end == 0 or render.pos_r != row or render.pos_c != start_col) {
+        try render.cup(row, start_col);
+        render.pos_r = row;
+    }
+
+    var c = start_col;
+    var attr_id = render.attr_id;
+    while (c < end_col) : (c += 1) {
+        const cell = &g.cell.items[basepos + c];
+        if (cell.attr_id != attr_id) {
+            attr_id = cell.attr_id;
+            try render.put(self.attr_slice(cell.attr_id));
+        }
+        try render.put(ui.text(cell));
+    }
+    render.pos_c = c;
+    render.attr_id = attr_id;
+
+    // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?
+}
+const dbg = std.debug.print;
+
+pub fn put_grid(self: *Self) !void {
+    // TODO: buffered writing?
+    const tty = self.tty_writer;
+    const ui = &self.rpc.ui;
+    const g = ui.grid(1) orelse return;
+
+    try tty.writeAll(ctlseqs.home);
+    var attr_id: u32 = 0;
+    for (0..g.rows) |row| {
+        const basepos = row * g.cols;
+        for (0..g.cols) |col| {
+            const cell = g.cell.items[basepos + col];
+
+            if (cell.attr_id != attr_id) {
+                attr_id = cell.attr_id;
+                try tty.writeAll(self.attr_slice(attr_id));
+            }
+            try tty.writeAll(ui.text(&cell));
+        }
+        try tty.writeAll("\r\n");
+    }
+}
+
+pub fn cb_flush(self: *Self) !void {
+    const ui = &self.rpc.ui;
+    const tty = self.tty_writer;
+    try tty.writeAll(ctlseqs.sgr_reset);
+    // dbg("flish: {}\n", .{self.render.buf.writer.end});
+    // TODO: want to use the writev trick just like in the C TUI
+    try tty.writeAll(self.render.buf.writer.buffered());
+    _ = self.render.buf.writer.consumeAll();
+
+    // only if needed
+    try tty.print(ctlseqs.cup, .{ ui.cursor.row + 1, ui.cursor.col + 1 });
+    try tty.flush(); // dOn'T fORgEt To fLuSH
+}
