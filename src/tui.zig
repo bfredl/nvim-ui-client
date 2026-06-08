@@ -11,7 +11,7 @@ const ctlseqs = struct {
     pub const erase_below_cursor = "\x1b[J";
 };
 
-const Self = @This();
+const TUI = @This();
 
 io: std.Io,
 gpa: std.mem.Allocator,
@@ -130,7 +130,7 @@ pub fn main(init: std.process.Init) !void {
 
     const winsize = (getWinsize(tty_fd)) catch std.posix.winsize{ .row = 25, .col = 80, .xpixel = 0, .ypixel = 0 };
 
-    var self: Self = .{
+    var self: TUI = .{
         .parser = .{},
         .rpc = try .init(gpa),
         .tty_writer = &writer.interface,
@@ -211,7 +211,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn ttyReadCb(
-    self: *Self,
+    self: *TUI,
     buf: []const u8,
 ) !usize {
     // std.debug.print("Nommm {}\r\n", .{n});
@@ -246,7 +246,7 @@ fn ttyReadCb(
     return seq_start;
 }
 
-fn handleKeyPress(self: *Self, k: Parser.Key) void {
+fn handleKeyPress(self: *TUI, k: Parser.Key) void {
     const Key = Parser.Key;
     if (k.text) |text| {
         self.enqueueInput(text);
@@ -274,7 +274,7 @@ fn handleKeyPress(self: *Self, k: Parser.Key) void {
     }
 }
 
-fn attach(self: *Self, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width: u32, height: u32) !void {
+fn attach(self: *TUI, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width: u32, height: u32) !void {
     var the_fd: ?i32 = null;
     if (false) {
         the_fd = try std.posix.dup(0);
@@ -287,7 +287,7 @@ fn attach(self: *Self, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, widt
     try self.flush_input();
 }
 
-fn flush_input(self: *Self) !void {
+fn flush_input(self: *TUI) !void {
     self.child.stdin.?.writeStreamingAll(self.io, self.enc_buf.writer.buffered()) catch |err| switch (err) {
         error.BrokenPipe => {
             // Nvim exited. we will handle this later
@@ -298,13 +298,13 @@ fn flush_input(self: *Self) !void {
     _ = self.enc_buf.writer.consumeAll();
 }
 
-fn enqueueInput(self: *Self, str: []const u8) void {
+fn enqueueInput(self: *TUI, str: []const u8) void {
     // dbg("aha: {s}\n", .{str});
     const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
     RPC.unsafe_input(encoder, str) catch @panic("memory error");
 }
 
-fn checkResize(self: *Self) !void {
+fn checkResize(self: *TUI) !void {
     const new_size = try getWinsize(self.tty_fd);
     if (new_size.row != self.winsize.row or new_size.col != self.winsize.col) {
         self.winsize = new_size;
@@ -315,10 +315,7 @@ fn checkResize(self: *Self) !void {
     }
 }
 
-fn nvimReadCb(
-    self: *Self,
-    buf: []const u8,
-) usize {
+fn nvimReadCb(self: *TUI, buf: []const u8) usize {
     self.decoder.data = buf;
     self.rpc.process(&self.decoder) catch @panic("go crazy yea");
     // TODO: this is a little messy. rework mpack.SkipDecoder to work nicely with
@@ -329,7 +326,7 @@ fn nvimReadCb(
     return consumed;
 }
 
-pub fn attr_slice(self: *Self, id: u32) []const u8 {
+pub fn attr_slice(self: *TUI, id: u32) []const u8 {
     if (id > 0 and id < self.rpc.ui.attrs.items.len) {
         // TODO: cached slices are still cool, but we should build them using vaxis
         const islice = self.rpc.ui.attrs.items[id];
@@ -338,7 +335,7 @@ pub fn attr_slice(self: *Self, id: u32) []const u8 {
     return ctlseqs.sgr_reset;
 }
 
-pub fn cb_grid_clear(self: *Self, grid_id: u32) !void {
+pub fn cb_grid_clear(self: *TUI, grid_id: u32) !void {
     _ = self.render.buf.writer.consumeAll();
     if (grid_id != 1) return;
     try self.render.put(ctlseqs.home ++ ctlseqs.erase_below_cursor);
@@ -352,11 +349,11 @@ const enter_lrmm = "\x1b[?69h";
 const exit_lrmm = "\x1b[?69l";
 const smglr = "\x1b[{};{}s";
 
-fn grid(self: *Self) ?*UIState.Grid {
+fn grid(self: *TUI) ?*UIState.Grid {
     return self.rpc.ui.grid(1);
 }
 
-pub fn cb_grid_scroll(self: *Self, grid_id: u32, top: u32, bot: u32, left: u32, right: u32, rows: i32) !void {
+pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top: u32, bot: u32, left: u32, right: u32, rows: i32) !void {
     std.debug.print("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid_id, top, bot, left, right, rows });
     const g = self.grid() orelse return;
     const render = &self.render;
@@ -389,7 +386,7 @@ pub fn cb_grid_scroll(self: *Self, grid_id: u32, top: u32, bot: u32, left: u32, 
 const invalid_fixme = 0xFFFFFFFF;
 
 // note: RPC callbacks happen in the nvim read callback. heavy work need to be scheduled..
-pub fn cb_grid_line(self: *Self, grid_id: u32, row: u32, start_col: u32, end_col: u32) !void {
+pub fn cb_grid_line(self: *TUI, grid_id: u32, row: u32, start_col: u32, end_col: u32) !void {
     // dbg("boll: {} {}, {}-{}\n", .{ grid_id, row, start_col, end_col });
     _ = grid_id;
     const render = &self.render;
@@ -419,7 +416,7 @@ pub fn cb_grid_line(self: *Self, grid_id: u32, row: u32, start_col: u32, end_col
 }
 const dbg = std.debug.print;
 
-pub fn put_grid(self: *Self) !void {
+pub fn put_grid(self: *TUI) !void {
     // TODO: buffered writing?
     const tty = self.tty_writer;
     const ui = &self.rpc.ui;
@@ -442,7 +439,7 @@ pub fn put_grid(self: *Self) !void {
     }
 }
 
-pub fn cb_flush(self: *Self) !void {
+pub fn cb_flush(self: *TUI) !void {
     const ui = &self.rpc.ui;
     const tty = self.tty_writer;
     try tty.writeAll(ctlseqs.sgr_reset);

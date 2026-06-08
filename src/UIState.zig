@@ -1,6 +1,6 @@
 const std = @import("std");
 const mem = std.mem;
-const Self = @This();
+const UIState = @This();
 const dbg = std.debug.print;
 
 gpa: mem.Allocator,
@@ -24,14 +24,14 @@ msg: ?struct {
     char: CellText,
 } = null,
 
-pub fn grid(self: *Self, id: u32) ?*Grid {
+pub fn grid(self: *UIState, id: u32) ?*Grid {
     if (self.grid_nr == id) {
         return self.grid_cached;
     }
     return self.grids.getPtr(id);
 }
 
-pub fn put_grid(self: *Self, id: u32) !*Grid {
+pub fn put_grid(self: *UIState, id: u32) !*Grid {
     if (self.grid_nr == id) {
         return self.grid_cached;
     }
@@ -64,14 +64,14 @@ pub const ModeInfo = struct {
     attr_id: u32 = 0,
     short_name: [2]u8 = .{ '?', '?' },
 };
-pub fn mode(self: *Self) ModeInfo {
+pub fn mode(self: *UIState) ModeInfo {
     return if (self.mode_info.items.len > self.mode_idx) self.mode_info.items[self.mode_idx] else .{};
 }
-pub fn attr(self: *Self, attr_id: u32) Attr {
+pub fn attr(self: *UIState, attr_id: u32) Attr {
     return self.attrs.items[if (self.attrs.items.len > attr_id) attr_id else 0];
 }
 
-pub fn get_colors(self: *Self, a: Attr) struct { RGB, RGB, RGB } {
+pub fn get_colors(self: *UIState, a: Attr) struct { RGB, RGB, RGB } {
     const bg = a.bg orelse self.default_colors.bg;
     const fg = a.fg orelse self.default_colors.fg;
     const sp = a.sp orelse self.default_colors.sp;
@@ -111,7 +111,7 @@ pub const Cell = struct {
 
 pub const RGB = packed struct { b: u8, g: u8, r: u8 };
 
-pub fn init(gpa: mem.Allocator) !Self {
+pub fn init(gpa: mem.Allocator) !UIState {
     var attrs: std.ArrayListUnmanaged(Attr) = .empty;
     try attrs.append(gpa, .{});
     return .{
@@ -120,7 +120,7 @@ pub fn init(gpa: mem.Allocator) !Self {
     };
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *UIState) void {
     self.attr_arena.deinit(self.gpa);
     self.glyph_arena.deinit(self.gpa);
     self.glyph_cache.deinit(self.gpa);
@@ -133,7 +133,7 @@ pub fn deinit(self: *Self) void {
     self.grids.deinit(self.gpa);
 }
 
-pub fn text(self: *@This(), cell: *const Cell) []const u8 {
+pub fn text(self: *UIState, cell: *const Cell) []const u8 {
     return switch (cell.text) {
         // oo I eat plain toast
         .plain => |*str| str[0 .. std.mem.indexOfScalar(u8, str, 0) orelse charsize],
@@ -141,7 +141,7 @@ pub fn text(self: *@This(), cell: *const Cell) []const u8 {
     };
 }
 
-pub fn intern_glyph(self: *@This(), str: []const u8) !CellText {
+pub fn intern_glyph(self: *UIState, str: []const u8) !CellText {
     if (str.len <= charsize) {
         var char: [charsize]u8 = undefined;
         for (0..str.len) |i| {
@@ -168,7 +168,7 @@ pub fn intern_glyph(self: *@This(), str: []const u8) !CellText {
     }
 }
 
-pub fn dump_grid(self: *Self, id: u32) void {
+pub fn dump_grid(self: *UIState, id: u32) void {
     var attr_id: u32 = 0;
     dbg("GRID {} begin ======\n", .{id});
     const g = self.grid(id) orelse &Grid{};

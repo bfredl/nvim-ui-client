@@ -3,7 +3,7 @@ const mpack = @import("./mpack.zig");
 const UIState = @import("./UIState.zig");
 const mem = std.mem;
 const stringToEnum = std.meta.stringToEnum;
-const Self = @This();
+const RPC = @This();
 const dbg = std.debug.print;
 
 const State = enum {
@@ -36,15 +36,15 @@ fn putAt(allocator: mem.Allocator, array_list: anytype, index: usize, item: anyt
     array_list.items[index] = item;
 }
 
-pub fn init(gpa: mem.Allocator) !Self {
+pub fn init(gpa: mem.Allocator) !RPC {
     return .{ .ui = try .init(gpa) };
 }
 
-pub fn deinit(self: *Self) void {
+pub fn deinit(self: *RPC) void {
     self.ui.deinit();
 }
 
-fn process_inner(self: *Self, decoder: *mpack.SkipDecoder) !void {
+fn process_inner(self: *RPC, decoder: *mpack.SkipDecoder) !void {
     // dbg("haii {}\n", .{decoder.data.len});
 
     while (true) {
@@ -54,19 +54,19 @@ fn process_inner(self: *Self, decoder: *mpack.SkipDecoder) !void {
         if (decoder.data.len == 0) break;
 
         try switch (self.state) {
-            inline else => |tag| @field(Self, @tagName(tag))(self, decoder),
+            inline else => |tag| @field(RPC, @tagName(tag))(self, decoder),
         };
     }
 }
 
-pub fn process(self: *Self, decoder: *mpack.SkipDecoder) !void {
+pub fn process(self: *RPC, decoder: *mpack.SkipDecoder) !void {
     return self.process_inner(decoder) catch |e| switch (e) {
         error.EOFError => {}, // recoverable when more data is available
         else => return e,
     };
 }
 
-fn next_msg(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn next_msg(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const tok = try decoder.expectArray();
     if (tok < 3) return error.MalformatedRPCMessage;
@@ -84,7 +84,7 @@ fn next_msg(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     return self.redraw_event(base_decoder);
 }
 
-fn redraw_event(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn redraw_event(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     if (self.redraw_events == 0) {
         // todo: with guaranteed tail calls, we could "return next_msg()" without problems
         self.state = .next_msg;
@@ -129,7 +129,7 @@ const RedrawEvents = enum {
     flush,
 };
 
-fn redraw_call(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn redraw_call(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     if (self.event_calls == 0) {
         // todo: with guaranteed tail calls, we could "return redraw_event()" without problems
         self.state = .redraw_event;
@@ -137,11 +137,11 @@ fn redraw_call(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     }
     self.state = .redraw_call;
     try switch (self.event) {
-        inline else => |tag| @field(Self, @tagName(tag))(self, base_decoder),
+        inline else => |tag| @field(RPC, @tagName(tag))(self, base_decoder),
     };
 }
 
-fn hl_attr_define(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn hl_attr_define(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const debug = false;
 
@@ -211,7 +211,7 @@ const ModeState = struct {
     n_modes: u32,
 };
 
-fn mode_info_set(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn mode_info_set(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     const cursor_style = try decoder.expectBool();
@@ -231,7 +231,7 @@ fn mode_info_set(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     try self.next_mode(base_decoder);
 }
 
-fn next_mode(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn next_mode(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     const s = &self.event_state.mode;
     self.state = .next_mode;
     const debug = false;
@@ -281,7 +281,7 @@ fn next_mode(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     try base_decoder.skipData();
 }
 
-fn mode_change(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn mode_change(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     const mode = try decoder.expectString();
@@ -296,7 +296,7 @@ fn mode_change(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     self.event_calls -= 1;
 }
 
-fn grid_resize(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn grid_resize(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     const grid_id = try decoder.expectUInt();
@@ -318,7 +318,7 @@ fn grid_resize(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     @memset(grid.cell.items, .{ .text = .{ .plain = char }, .attr_id = 0 });
 }
 
-fn grid_clear(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn grid_clear(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     const grid_id = try decoder.expectUInt();
@@ -335,10 +335,10 @@ fn grid_clear(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
 
     @memset(grid.cell.items, .{ .text = .{ .plain = char }, .attr_id = 0 });
 
-    try main(self).cb_grid_clear(@intCast(grid_id));
+    try owner(self).cb_grid_clear(@intCast(grid_id));
 }
 
-fn grid_scroll(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn grid_scroll(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     if (iarg < 7) return error.MalformatedRPCMessage;
@@ -373,10 +373,10 @@ fn grid_scroll(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
         @memcpy(cells[target + left .. target + right], cells[src + left .. src + right]);
     }
 
-    try main(self).cb_grid_scroll(grid_id, @intCast(top), @intCast(bot), left, right, rows);
+    try owner(self).cb_grid_scroll(grid_id, @intCast(top), @intCast(bot), left, right, rows);
 }
 
-fn grid_cursor_goto(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn grid_cursor_goto(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     if (iarg < 3) return error.MalformatedRPCMessage;
@@ -391,7 +391,7 @@ fn grid_cursor_goto(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     self.event_calls -= 1;
 }
 
-fn default_colors_set(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn default_colors_set(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     if (iarg < 3) return error.MalformatedRPCMessage;
@@ -406,14 +406,14 @@ fn default_colors_set(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     self.event_calls -= 1;
 }
 
-fn flush(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn flush(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     base_decoder.toSkip(1);
     self.event_calls -= 1;
 
-    try main(self).cb_flush();
+    try owner(self).cb_flush();
 }
 
-fn main(self: *Self) *@import("root") {
+fn owner(self: *RPC) *@import("root") {
     return @fieldParentPtr("rpc", self);
 }
 
@@ -428,7 +428,7 @@ const CellState = struct {
     attr_id: u32,
 };
 
-fn grid_line(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn grid_line(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     while (self.event_calls > 0) {
         var decoder = try base_decoder.inner();
         const iarg = try decoder.expectArray();
@@ -460,7 +460,7 @@ fn grid_line(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     }
 }
 
-fn next_cell(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn next_cell(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     const s = &self.event_state.cell;
     self.state = .next_cell;
 
@@ -493,14 +493,14 @@ fn next_cell(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
         s.ncells -= 1;
     }
 
-    try main(self).cb_grid_line(s.grid_id, s.row, s.start_col, s.col);
+    try owner(self).cb_grid_line(s.grid_id, s.row, s.start_col, s.col);
 
     base_decoder.toSkip(s.event_extra_args);
     self.state = .redraw_call;
     try base_decoder.skipData();
 }
 
-fn win_pos(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn win_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     if (iarg < 6) return error.MalformatedRPCMessage;
@@ -523,7 +523,7 @@ fn win_pos(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     self.event_calls -= 1;
 }
 
-fn win_hide(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn win_hide(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     if (iarg < 1) return error.MalformatedRPCMessage;
@@ -539,12 +539,12 @@ fn win_hide(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     self.event_calls -= 1;
 }
 
-fn win_close(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn win_close(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     dbg("closed and ", .{});
     return win_hide(self, base_decoder);
 }
 
-fn msg_set_pos(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
+fn msg_set_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const iarg = try decoder.expectArray();
     if (iarg < 4) return error.MalformatedRPCMessage;

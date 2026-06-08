@@ -4,17 +4,17 @@ const dbg = std.debug.print;
 pub const Encoder = struct {
     writer: *std.Io.Writer,
 
-    pub fn init(writer: *std.Io.Writer) Self {
+    pub fn init(writer: *std.Io.Writer) Encoder {
         return .{ .writer = writer };
     }
 
-    const Self = @This();
     pub const Error = std.Io.Writer.Error;
 
-    fn put(self: Self, comptime T: type, val: T) Error!void {
+    fn put(self: Encoder, comptime T: type, val: T) Error!void {
         if (T == u8) {
             try self.writer.writeByte(val);
         } else if (T == u16) {
+            // can use write int..
             try self.put(u8, @intCast((val >> 8) & 0xFF));
             try self.put(u8, @intCast(val & 0xFF));
         } else if (T == u32) {
@@ -25,7 +25,7 @@ pub const Encoder = struct {
         }
     }
 
-    pub fn putArrayHead(self: Self, count: u32) Error!void {
+    pub fn putArrayHead(self: Encoder, count: u32) Error!void {
         if (count <= 15) {
             try self.put(u8, 0x90 | @as(u8, @intCast(count)));
         } else if (count <= std.math.maxInt(u16)) {
@@ -37,7 +37,7 @@ pub const Encoder = struct {
         }
     }
 
-    pub fn putMapHead(self: Self, count: u32) Error!void {
+    pub fn putMapHead(self: Encoder, count: u32) Error!void {
         if (count <= 15) {
             try self.put(u8, 0x80 | @as(u8, @intCast(count)));
         } else if (count <= std.math.maxInt(u16)) {
@@ -49,7 +49,7 @@ pub const Encoder = struct {
         }
     }
 
-    pub fn putStr(self: Self, val: []const u8) Error!void {
+    pub fn putStr(self: Encoder, val: []const u8) Error!void {
         const len = val.len;
         if (len <= 31) {
             try self.put(u8, 0xa0 + @as(u8, @intCast(len)));
@@ -60,7 +60,7 @@ pub const Encoder = struct {
         try self.writer.writeAll(val);
     }
 
-    pub fn putInt(self: Self, val: anytype) Error!void {
+    pub fn putInt(self: Encoder, val: anytype) Error!void {
         const unsigned = comptime switch (@typeInfo(@TypeOf(val))) {
             .int => |int| int.signedness == .unsigned,
             .comptime_int => false, // or val >= 0 but handled below
@@ -80,7 +80,7 @@ pub const Encoder = struct {
         }
     }
 
-    pub fn putBool(self: Self, b: bool) Error!void {
+    pub fn putBool(self: Encoder, b: bool) Error!void {
         try self.put(u8, @as(u8, if (b) 0xc3 else 0xc2));
     }
 };
@@ -126,8 +126,7 @@ const EOFError = error{EOFError};
 pub const InnerDecoder = struct {
     data: []const u8,
 
-    const Self = @This();
-    fn readBytes(self: *Self, size: usize) EOFError![]const u8 {
+    fn readBytes(self: *InnerDecoder, size: usize) EOFError![]const u8 {
         if (self.data.len < size) {
             return error.EOFError;
         }
@@ -136,7 +135,7 @@ pub const InnerDecoder = struct {
         return slice;
     }
 
-    fn readInt(self: *Self, comptime T: type) EOFError!T {
+    fn readInt(self: *InnerDecoder, comptime T: type) EOFError!T {
         if (@typeInfo(T) != .int) {
             @compileError("why u no int???");
         }
@@ -147,24 +146,24 @@ pub const InnerDecoder = struct {
         return std.mem.bigToNative(T, out);
     }
 
-    fn readFloat(self: *Self, comptime T: type) EOFError!T {
+    fn readFloat(self: *InnerDecoder, comptime T: type) EOFError!T {
         const utype = if (T == f32) u32 else if (T == f64) u64 else undefined;
         const int = try self.readInt(utype);
         return @bitCast(int);
     }
 
-    fn readFixExt(self: *Self, size: u32) EOFError!ExtHead {
+    fn readFixExt(self: *InnerDecoder, size: u32) EOFError!ExtHead {
         const kind = try self.readInt(i8);
         return ExtHead{ .kind = kind, .size = size };
     }
 
-    fn readExt(self: *Self, comptime sizetype: type) EOFError!ExtHead {
+    fn readExt(self: *InnerDecoder, comptime sizetype: type) EOFError!ExtHead {
         const size = try self.readInt(sizetype);
         return try self.readFixExt(size);
     }
 
     /// ]]|
-    pub fn readHead(self: *Self) MpackError!ValueHead {
+    pub fn readHead(self: *InnerDecoder) MpackError!ValueHead {
         const first_byte = (try self.readBytes(1))[0];
 
         const val: ValueHead = switch (first_byte) {
@@ -211,21 +210,21 @@ pub const InnerDecoder = struct {
     }
 
     // TODO: lol what is generic function? :S
-    pub fn expectArray(self: *Self) MpackError!u32 {
+    pub fn expectArray(self: *InnerDecoder) MpackError!u32 {
         switch (try self.readHead()) {
             .Array => |size| return size,
             else => return error.UnexpectedTagError,
         }
     }
 
-    pub fn expectMap(self: *Self) MpackError!u32 {
+    pub fn expectMap(self: *InnerDecoder) MpackError!u32 {
         switch (try self.readHead()) {
             .Map => |size| return size,
             else => return error.UnexpectedTagError,
         }
     }
 
-    pub fn expectUInt(self: *Self) MpackError!u64 {
+    pub fn expectUInt(self: *InnerDecoder) MpackError!u64 {
         switch (try self.readHead()) {
             .UInt => |val| return val,
             .Int => |val| {
@@ -238,7 +237,7 @@ pub const InnerDecoder = struct {
         }
     }
 
-    pub fn expectInt(self: *Self) MpackError!i64 {
+    pub fn expectInt(self: *InnerDecoder) MpackError!i64 {
         switch (try self.readHead()) {
             .UInt => |val| return @bitCast(val), // suss but what can you do
             .Int => |val| return val,
@@ -246,14 +245,14 @@ pub const InnerDecoder = struct {
         }
     }
 
-    pub fn expectBool(self: *Self) MpackError!bool {
+    pub fn expectBool(self: *InnerDecoder) MpackError!bool {
         switch (try self.readHead()) {
             .Bool => |val| return val,
             else => return error.UnexpectedTagError,
         }
     }
 
-    pub fn expectString(self: *Self) MpackError![]const u8 {
+    pub fn expectString(self: *InnerDecoder) MpackError![]const u8 {
         const size = switch (try self.readHead()) {
             .Str => |size| size,
             .Bin => |size| size,
@@ -268,7 +267,7 @@ pub const InnerDecoder = struct {
         return str;
     }
 
-    pub fn expectExt(self: *Self) MpackError!SmallExt {
+    pub fn expectExt(self: *InnerDecoder) MpackError!SmallExt {
         const hdr = switch (try self.readHead()) {
             .Ext => |e| e,
             else => return error.UnexpectedTagError,
@@ -282,7 +281,7 @@ pub const InnerDecoder = struct {
         return SmallExt{ .kind = hdr.kind, .data = str };
     }
 
-    pub fn skipAny(self: *Self, nitems: u64) MpackError!void {
+    pub fn skipAny(self: *InnerDecoder, nitems: u64) MpackError!void {
         var bytes: u64 = 0;
         var items: u64 = nitems;
         while (bytes > 0 or items > 0) {
@@ -309,29 +308,27 @@ pub const SkipDecoder = struct {
     bytes: u64 = 0,
     items: u64 = 0,
 
-    fn init(data: []u8) Self {
+    fn init(data: []u8) SkipDecoder {
         return .{ .data = data };
     }
 
-    fn rawInner(self: *Self) InnerDecoder {
+    fn rawInner(self: *SkipDecoder) InnerDecoder {
         return InnerDecoder{ .data = self.data };
     }
 
-    pub fn inner(self: *Self) !InnerDecoder {
+    pub fn inner(self: *SkipDecoder) !InnerDecoder {
         if (self.bytes > 0 or self.items > 0) return error.InvalidDecodeOperation;
         return self.rawInner();
     }
 
-    pub fn consumed(self: *Self, c: InnerDecoder) void {
+    pub fn consumed(self: *SkipDecoder, c: InnerDecoder) void {
         self.data = c.data;
     }
-
-    const Self = @This();
 
     const debugMode = true;
 
     // safe to retry after EOFError
-    pub fn skipData(self: *Self) MpackError!void {
+    pub fn skipData(self: *SkipDecoder) MpackError!void {
         while (self.bytes > 0 or self.items > 0) {
             if (self.data.len == 0) {
                 return error.EOFError;
@@ -352,7 +349,7 @@ pub const SkipDecoder = struct {
         }
     }
 
-    pub fn toSkip(self: *Self, items: usize) void {
+    pub fn toSkip(self: *SkipDecoder, items: usize) void {
         self.items += items;
     }
 };

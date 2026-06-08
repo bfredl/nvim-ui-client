@@ -6,24 +6,24 @@ const RPC = @import("./RPC.zig");
 const server = @import("./server.zig");
 
 rpc: RPC,
-const Self = @This();
+const IOTest = @This();
 
-pub fn cb_grid_clear(self: *Self, grid: u32) !void {
+pub fn cb_grid_clear(self: *IOTest, grid: u32) !void {
     _ = self;
     std.debug.print("kireee: {} \n", .{grid});
 }
 
-pub fn cb_grid_line(self: *Self, grid: u32, row: u32, start_col: u32, end_col: u32) !void {
+pub fn cb_grid_line(self: *IOTest, grid: u32, row: u32, start_col: u32, end_col: u32) !void {
     _ = self;
     std.debug.print("boll: {} {}, {}-{}\n", .{ grid, row, start_col, end_col });
 }
 
-pub fn cb_grid_scroll(self: *Self, grid: u32, top: u32, bot: u32, left: u32, right: u32, rows: i32) !void {
+pub fn cb_grid_scroll(self: *IOTest, grid: u32, top: u32, bot: u32, left: u32, right: u32, rows: i32) !void {
     _ = self;
     std.debug.print("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid, top, bot, left, right, rows });
 }
 
-pub fn cb_flush(self: *Self) !void {
+pub fn cb_flush(self: *IOTest) !void {
     self.rpc.ui.dump_grid(1);
 }
 
@@ -46,7 +46,7 @@ pub fn main(init: std.process.Init) !void {
 fn dummy_loop(io: std.Io, stdout: anytype, allocator: std.mem.Allocator) !void {
     var buf: [1024]u8 = undefined;
     var decoder = mpack.SkipDecoder{ .data = buf[0..0] };
-    var self: @This() = .{ .rpc = try RPC.init(allocator) };
+    var self: IOTest = .{ .rpc = try RPC.init(allocator) };
 
     while (true) {
         const oldlen = decoder.data.len;
