@@ -36,8 +36,12 @@ fn putAt(allocator: mem.Allocator, array_list: anytype, index: usize, item: anyt
     array_list.items[index] = item;
 }
 
-pub fn init(allocator: mem.Allocator) !Self {
-    return .{ .ui = try .init(allocator) };
+pub fn init(gpa: mem.Allocator) !Self {
+    return .{ .ui = try .init(gpa) };
+}
+
+pub fn deinit(self: *Self) void {
+    self.ui.deinit();
 }
 
 fn process_inner(self: *Self, decoder: *mpack.SkipDecoder) !void {
@@ -180,7 +184,7 @@ fn hl_attr_define(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     }
     attr.start = @intCast(self.ui.attr_arena.items.len);
     // soo. Writer.Allocating is the new ArrayListManaged. GOOD JOB ZIG CORE DEVS
-    var aw: std.Io.Writer.Allocating = .fromArrayList(self.ui.allocator, &self.ui.attr_arena);
+    var aw: std.Io.Writer.Allocating = .fromArrayList(self.ui.gpa, &self.ui.attr_arena);
     const w = &aw.writer;
     try w.writeAll("\x1b[0m");
     if (attr.fg) |rgb| {
@@ -194,7 +198,7 @@ fn hl_attr_define(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     }
     self.ui.attr_arena = aw.toArrayList();
     attr.end = @intCast(self.ui.attr_arena.items.len);
-    try putAt(self.ui.allocator, &self.ui.attrs, id, attr);
+    try putAt(self.ui.gpa, &self.ui.attrs, id, attr);
     if (debug) dbg("\n", .{});
 
     base_decoder.consumed(decoder);
@@ -221,7 +225,7 @@ fn mode_info_set(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
 
-    try self.ui.mode_info.ensureTotalCapacity(self.ui.allocator, n_modes);
+    try self.ui.mode_info.ensureTotalCapacity(self.ui.gpa, n_modes);
     self.ui.mode_info.items.len = 0;
 
     try self.next_mode(base_decoder);
@@ -305,7 +309,7 @@ fn grid_resize(self: *Self, base_decoder: *mpack.SkipDecoder) !void {
     base_decoder.toSkip(iarg - 3);
     self.event_calls -= 1;
 
-    try grid.cell.resize(self.ui.allocator, grid.rows * grid.cols);
+    try grid.cell.resize(self.ui.gpa, grid.rows * grid.cols);
 
     // TODO: not correct for windows, which retain the upper-left
     var char: [UIState.charsize]u8 = undefined;

@@ -3,7 +3,7 @@ const mem = std.mem;
 const Self = @This();
 const dbg = std.debug.print;
 
-allocator: mem.Allocator,
+gpa: mem.Allocator,
 attr_arena: std.ArrayListUnmanaged(u8) = .empty,
 glyph_arena: std.ArrayListUnmanaged(u8) = .empty,
 glyph_cache: std.HashMapUnmanaged(u32, void, std.hash_map.StringIndexContext, std.hash_map.default_max_load_percentage) = .empty,
@@ -35,7 +35,7 @@ pub fn put_grid(self: *Self, id: u32) !*Grid {
     if (self.grid_nr == id) {
         return self.grid_cached;
     }
-    const gop = try self.grids.getOrPut(self.allocator, id);
+    const gop = try self.grids.getOrPut(self.gpa, id);
     if (!gop.found_existing) {
         gop.value_ptr.* = Grid{};
     }
@@ -111,13 +111,26 @@ pub const Cell = struct {
 
 pub const RGB = packed struct { b: u8, g: u8, r: u8 };
 
-pub fn init(allocator: mem.Allocator) !Self {
+pub fn init(gpa: mem.Allocator) !Self {
     var attrs: std.ArrayListUnmanaged(Attr) = .empty;
-    try attrs.append(allocator, .{});
+    try attrs.append(gpa, .{});
     return .{
-        .allocator = allocator,
+        .gpa = gpa,
         .attrs = attrs,
     };
+}
+
+pub fn deinit(self: *Self) void {
+    self.attr_arena.deinit(self.gpa);
+    self.glyph_arena.deinit(self.gpa);
+    self.glyph_cache.deinit(self.gpa);
+    self.attrs.deinit(self.gpa);
+    self.mode_info.deinit(self.gpa);
+    var it = self.grids.iterator();
+    while (it.next()) |e| {
+        e.value_ptr.cell.deinit(self.gpa);
+    }
+    self.grids.deinit(self.gpa);
 }
 
 pub fn text(self: *@This(), cell: *const Cell) []const u8 {
@@ -139,7 +152,7 @@ pub fn intern_glyph(self: *@This(), str: []const u8) !CellText {
         }
         return .{ .plain = char };
     }
-    const gop = try self.glyph_cache.getOrPutContextAdapted(self.allocator, str, std.hash_map.StringIndexAdapter{
+    const gop = try self.glyph_cache.getOrPutContextAdapted(self.gpa, str, std.hash_map.StringIndexAdapter{
         .bytes = &self.glyph_arena,
     }, std.hash_map.StringIndexContext{
         .bytes = &self.glyph_arena,
@@ -149,8 +162,8 @@ pub fn intern_glyph(self: *@This(), str: []const u8) !CellText {
     } else {
         const str_index: u32 = @intCast(self.glyph_arena.items.len);
         gop.key_ptr.* = str_index;
-        try self.glyph_arena.appendSlice(self.allocator, str);
-        try self.glyph_arena.append(self.allocator, 0);
+        try self.glyph_arena.appendSlice(self.gpa, str);
+        try self.glyph_arena.append(self.gpa, 0);
         return .{ .indexed = str_index };
     }
 }

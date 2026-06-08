@@ -17,13 +17,11 @@ io: std.Io,
 gpa: std.mem.Allocator,
 parser: Parser,
 child: std.process.Child = undefined,
-winsize: Parser.Winsize = .{ .rows = 25, .cols = 80, .x_pixel = 0, .y_pixel = 0 },
+winsize: std.posix.winsize,
+tty_fd: std.posix.fd_t,
 
 // TODO: reconsider this:
 enc_buf: std.Io.Writer.Allocating,
-
-quitting: bool = false,
-signal_stopped: bool = false,
 
 // buf only for cell rendering. high prio messages might be sent directly
 // or use another buf
@@ -51,6 +49,8 @@ render: struct {
 decoder: mpack.SkipDecoder = undefined,
 rpc: RPC,
 tty_writer: *std.Io.Writer,
+
+var pending_winch: bool = false;
 
 fn makeRawTTY(fd: std.posix.fd_t) !std.posix.termios {
     const state = try std.posix.tcgetattr(fd);
@@ -82,6 +82,39 @@ fn makeRawTTY(fd: std.posix.fd_t) !std.posix.termios {
     return state;
 }
 
+/// Get the window size from the kernel
+pub fn getWinsize(fd: std.posix.fd_t) !std.posix.winsize {
+    var winsize = std.posix.winsize{
+        .row = 0,
+        .col = 0,
+        .xpixel = 0,
+        .ypixel = 0,
+    };
+
+    const err = std.posix.system.ioctl(fd, std.posix.T.IOCGWINSZ, @intFromPtr(&winsize));
+    if (std.posix.errno(err) == .SUCCESS) return winsize;
+    return error.IoctlError;
+}
+
+fn handleWinch(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*const anyopaque) callconv(.c) void {
+    _ = sig;
+    _ = info;
+    _ = ctx_ptr;
+    pending_winch = true;
+}
+
+pub fn setWinchHandler() !void {
+    var act = std.posix.Sigaction{
+        .handler = .{ .sigaction = handleWinch },
+        .mask = switch (@import("builtin").os.tag) {
+            .macos => 0,
+            else => std.posix.sigemptyset(),
+        },
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.WINCH, &act, null);
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     var mega_buffer: [512]u8 = undefined;
@@ -94,6 +127,9 @@ pub fn main(init: std.process.Init) !void {
     const tty_read: std.Io.File = .{ .handle = tty_fd, .flags = .{ .nonblocking = false } };
     const tty_write: std.Io.File = .{ .handle = tty_fd, .flags = .{ .nonblocking = false } };
     var writer = tty_write.writerStreaming(init.io, &mega_buffer);
+
+    const winsize = (getWinsize(tty_fd)) catch std.posix.winsize{ .row = 25, .col = 80, .xpixel = 0, .ypixel = 0 };
+
     var self: Self = .{
         .parser = .{},
         .rpc = try .init(gpa),
@@ -103,10 +139,14 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
         .enc_buf = .init(gpa),
         .render = .{ .buf = .init(gpa) },
+        .winsize = winsize,
+        .tty_fd = tty_fd,
     };
+    defer self.rpc.deinit();
+    defer self.render.buf.deinit();
+    defer self.enc_buf.deinit();
 
-    // self.winsize = try vaxis.Tty.getWinsize(self.tty.fd);
-    // try vaxis.Tty.notifyWinsize(.{ .callback = on_winch, .context = @ptrCast(&self) });
+    try setWinchHandler();
 
     // try vx.enterAltScreen(ttyw);
     // defer vx.deinit(gpa, ttyw);
@@ -120,7 +160,7 @@ pub fn main(init: std.process.Init) !void {
         nvim = std.mem.span(argv_rest[1]);
         argv_rest = argv_rest[2..];
     }
-    try self.attach(nvim, argv_rest, self.winsize.cols, self.winsize.rows);
+    try self.attach(nvim, argv_rest, self.winsize.col, self.winsize.row);
     const nvim_read: std.Io.File = self.child.stdout.?;
 
     // WOW they actually implemted something very useful: essentially
@@ -133,10 +173,22 @@ pub fn main(init: std.process.Init) !void {
 
     const nvim_reader = multi_reader.reader(0);
     const tty_reader = multi_reader.reader(1);
+    const nvim_context = &multi_reader.streams.contexts()[0];
 
     var tty_available_last: usize = 0;
     var nvim_available_last: usize = 0;
     while (multi_reader.fill(256, .none)) |_| {
+        const nvim_buffered = nvim_reader.buffered();
+        if (nvim_buffered.len > nvim_available_last) {
+            const read = self.nvimReadCb(nvim_buffered);
+            nvim_reader.toss(read);
+            nvim_available_last = nvim_reader.bufferedLen();
+        }
+        if (if (nvim_context.err) |e| e == error.EndOfStream else false) {
+            // NVIM EOF
+            break;
+        }
+
         // TODO: check EOF
         const tty_buffered = tty_reader.buffered();
         if (tty_buffered.len > tty_available_last) {
@@ -145,25 +197,12 @@ pub fn main(init: std.process.Init) !void {
             tty_available_last = tty_reader.bufferedLen();
         }
 
-        // TODO: nvim EOF
-        if (false) {
-            std.debug.print("nvim EOF!\n", .{});
-            break;
-        }
-        const nvim_buffered = nvim_reader.buffered();
-        if (nvim_buffered.len > nvim_available_last) {
-            const read = self.nvimReadCb(nvim_buffered);
-            nvim_reader.toss(read);
-            nvim_available_last = nvim_reader.bufferedLen();
-        }
-
-        if (self.quitting) break;
-
-        if (self.signal_stopped) {
+        // too late but whatever
+        if (pending_winch) {
             // XXX: this is a bit of a hack. preferably the event loop should natively
             // handle signals as events
-            self.signal_stopped = false;
-            // try self.checkResize();
+            pending_winch = false;
+            try self.checkResize();
         }
     } else |err| {
         // TODO;
@@ -265,18 +304,13 @@ fn enqueueInput(self: *Self, str: []const u8) void {
     RPC.unsafe_input(encoder, str) catch @panic("memory error");
 }
 
-fn on_winch(context: *anyopaque) void {
-    const self: *Self = @ptrCast(@alignCast(context));
-    self.signal_stopped = true;
-}
-
 fn checkResize(self: *Self) !void {
-    const new_size = try @This().Somehow.Tty.getWinsize(self.tty.fd);
-    if (new_size.rows != self.winsize.rows or new_size.cols != self.winsize.cols) {
+    const new_size = try getWinsize(self.tty_fd);
+    if (new_size.row != self.winsize.row or new_size.col != self.winsize.col) {
         self.winsize = new_size;
 
         const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-        RPC.try_resize(encoder, 1, self.winsize.cols, self.winsize.rows) catch @panic("memory error");
+        RPC.try_resize(encoder, 1, self.winsize.col, self.winsize.row) catch @panic("memory error");
         try self.flush_input();
     }
 }
