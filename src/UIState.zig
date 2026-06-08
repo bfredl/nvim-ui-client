@@ -4,11 +4,11 @@ const UIState = @This();
 const dbg = std.debug.print;
 
 gpa: mem.Allocator,
-attr_arena: std.ArrayListUnmanaged(u8) = .empty,
-glyph_arena: std.ArrayListUnmanaged(u8) = .empty,
+attr_arena: std.ArrayList(u8) = .empty,
+glyph_arena: std.ArrayList(u8) = .empty,
 glyph_cache: std.HashMapUnmanaged(u32, void, std.hash_map.StringIndexContext, std.hash_map.default_max_load_percentage) = .empty,
-attrs: std.ArrayListUnmanaged(Attr) = .empty,
-mode_info: std.ArrayListUnmanaged(ModeInfo) = .empty,
+attrs: std.ArrayList(Attr) = .empty,
+mode_info: std.ArrayList(ModeInfo) = .empty,
 mode_idx: u32 = 0,
 
 cursor: struct { grid: u32, row: u16, col: u16 } = undefined,
@@ -81,7 +81,7 @@ pub fn get_colors(self: *UIState, a: Attr) struct { RGB, RGB, RGB } {
 pub const Grid = struct {
     rows: u16 = 0,
     cols: u16 = 0,
-    cell: std.ArrayListUnmanaged(Cell) = .empty,
+    cell: std.ArrayList(Cell) = .empty,
     info: GridInfo = .none,
 };
 
@@ -112,7 +112,7 @@ pub const Cell = struct {
 pub const RGB = packed struct { b: u8, g: u8, r: u8 };
 
 pub fn init(gpa: mem.Allocator) !UIState {
-    var attrs: std.ArrayListUnmanaged(Attr) = .empty;
+    var attrs: std.ArrayList(Attr) = .empty;
     try attrs.append(gpa, .{});
     return .{
         .gpa = gpa,

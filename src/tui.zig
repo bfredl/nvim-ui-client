@@ -9,6 +9,7 @@ const ctlseqs = struct {
     pub const cup = "\x1b[{d};{d}H";
     pub const sgr_reset = "\x1b[m";
     pub const erase_below_cursor = "\x1b[J";
+    pub const set_cursor_style = "\x1b[{d} q";
 };
 
 const TUI = @This();
@@ -32,6 +33,7 @@ render: struct {
     pos_r: u32 = 0,
     pos_c: u32 = 0,
     attr_id: ?u32 = null,
+    cursor_shape: ?UIState.CursorShape = .block,
     const Render = @This();
 
     pub fn print(self: *Render, comptime fmt: []const u8, vals: anytype) !void {
@@ -448,7 +450,18 @@ pub fn cb_flush(self: *TUI) !void {
     try tty.writeAll(self.render.buf.writer.buffered());
     _ = self.render.buf.writer.consumeAll();
 
-    // only if needed
+    // TODO: only if needed
     try tty.print(ctlseqs.cup, .{ ui.cursor.row + 1, ui.cursor.col + 1 });
+
+    const wanted_shape = ui.mode().cursor_shape;
+    if (wanted_shape != self.render.cursor_shape) {
+        const idx: u8 = switch (wanted_shape) {
+            .block => 1,
+            .horizontal => 3,
+            .vertical => 5,
+        };
+        try tty.print(ctlseqs.set_cursor_style, .{idx});
+        self.render.cursor_shape = wanted_shape;
+    }
     try tty.flush(); // dOn'T fORgEt To fLuSH
 }
