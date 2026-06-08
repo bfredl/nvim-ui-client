@@ -57,7 +57,7 @@ pub const Attr = struct {
     altfont: bool = false,
 };
 
-pub const CursorShape = enum { block, horizontal, vertical };
+pub const CursorShape = enum(u8) { block = 1, horizontal = 3, vertical = 5 };
 pub const ModeInfo = struct {
     cursor_shape: CursorShape = .block,
     cell_percentage: u8 = 100,

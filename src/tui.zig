@@ -455,12 +455,7 @@ pub fn cb_flush(self: *TUI) !void {
 
     const wanted_shape = ui.mode().cursor_shape;
     if (wanted_shape != self.render.cursor_shape) {
-        const idx: u8 = switch (wanted_shape) {
-            .block => 1,
-            .horizontal => 3,
-            .vertical => 5,
-        };
-        try tty.print(ctlseqs.set_cursor_style, .{idx});
+        try tty.print(ctlseqs.set_cursor_style, .{@intFromEnum(wanted_shape)});
         self.render.cursor_shape = wanted_shape;
     }
     try tty.flush(); // dOn'T fORgEt To fLuSH
