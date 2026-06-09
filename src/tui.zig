@@ -11,6 +11,21 @@ const ctlseqs = struct {
     pub const erase_below_cursor = "\x1b[J";
     pub const set_cursor_style = "\x1b[{d} q";
 };
+const log = std.log.scoped(.tui);
+const dbg = log.debug;
+
+var is_noisy = false;
+
+fn logFn(
+    comptime level: std.log.Level,
+    comptime scope: @EnumLiteral(),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    if (!is_noisy) return;
+    std.log.defaultLog(level, scope, format, args);
+}
+pub const std_options: std.Options = .{ .logFn = logFn };
 
 const TUI = @This();
 
@@ -121,10 +136,10 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     var mega_buffer: [512]u8 = undefined;
 
-    const tty_fd = 2; // fubbit, do the full fd and /dev/tty dance
+    const tty_fd = 0; // fubbit, do the full fd and /dev/tty dance
 
     const termios = try makeRawTTY(tty_fd);
-    defer std.posix.tcsetattr(tty_fd, .FLUSH, termios) catch |err| std.debug.print("couldn't restore terminal: {}", .{err});
+    defer std.posix.tcsetattr(tty_fd, .FLUSH, termios) catch |err| dbg("couldn't restore terminal: {}", .{err});
 
     const tty_read: std.Io.File = .{ .handle = tty_fd, .flags = .{ .nonblocking = false } };
     const tty_write: std.Io.File = .{ .handle = tty_fd, .flags = .{ .nonblocking = false } };
@@ -158,6 +173,10 @@ pub fn main(init: std.process.Init) !void {
 
     var nvim: ?[]const u8 = null;
     var argv_rest = init.minimal.args.vector[1..];
+    if (argv_rest.len >= 1 and std.mem.eql(u8, std.mem.span(argv_rest[0]), "--tui_noisy")) {
+        is_noisy = true;
+        argv_rest = argv_rest[1..];
+    }
     if (argv_rest.len >= 2 and std.mem.eql(u8, std.mem.span(argv_rest[0]), "--nvim")) {
         nvim = std.mem.span(argv_rest[1]);
         argv_rest = argv_rest[2..];
@@ -216,11 +235,11 @@ fn ttyReadCb(
     self: *TUI,
     buf: []const u8,
 ) !usize {
-    // std.debug.print("Nommm {}\r\n", .{n});
+    // dbg("Nommm {}\r\n", .{n});
     var seq_start: usize = 0;
     while (seq_start < buf.len) {
         const result = self.parser.parse(buf[seq_start..buf.len], undefined) catch {
-            std.debug.print("??parser panik\r\n", .{});
+            log.err("??parser panik\r\n", .{});
             return error.PANIK;
         };
         if (result.n == 0) {
@@ -236,7 +255,7 @@ fn ttyReadCb(
                 self.handleKeyPress(k);
                 self.flush_input() catch @panic("RETURN TO SENDER");
             },
-            else => std.debug.print("event {}\r\n", .{event}),
+            else => dbg("event {}\r\n", .{event}),
         }
     }
 
@@ -268,11 +287,11 @@ fn handleKeyPress(self: *TUI, k: Parser.Key) void {
             var buf: [128]u8 = undefined;
             const key = std.fmt.bufPrint(&buf, "<{s}>", .{s}) catch unreachable;
             self.enqueueInput(key);
-        } else std.debug.print("keypress {}\r\n", .{k});
+        } else dbg("keypress {}\r\n", .{k});
     } else if (k.mods.ctrl == true and k.mods.alt == false and k.codepoint >= 'a' and k.codepoint <= 'z') {
         self.enqueueInput(&.{@intCast(k.codepoint - 'a' + 1)});
     } else {
-        std.debug.print("keypress {}\r\n", .{k});
+        dbg("keypress {}\r\n", .{k});
     }
 }
 
@@ -356,7 +375,7 @@ fn grid(self: *TUI) ?*UIState.Grid {
 }
 
 pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top: u32, bot: u32, left: u32, right: u32, rows: i32) !void {
-    std.debug.print("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid_id, top, bot, left, right, rows });
+    dbg("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid_id, top, bot, left, right, rows });
     const g = self.grid() orelse return;
     const render = &self.render;
     const top_bot = true;
@@ -416,7 +435,6 @@ pub fn cb_grid_line(self: *TUI, grid_id: u32, row: u32, start_col: u32, end_col:
 
     // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?
 }
-const dbg = std.debug.print;
 
 pub fn put_grid(self: *TUI) !void {
     // TODO: buffered writing?
@@ -455,7 +473,7 @@ pub fn cb_flush(self: *TUI) !void {
 
     const wanted_shape = ui.mode().cursor_shape;
     if (wanted_shape != self.render.cursor_shape) {
-        try tty.print(ctlseqs.set_cursor_style, .{@intFromEnum(wanted_shape)});
+        try tty.print(ctlseqs.set_cursor_style, .{@intFromEnum(wanted_shape) + 1});
         self.render.cursor_shape = wanted_shape;
     }
     try tty.flush(); // dOn'T fORgEt To fLuSH

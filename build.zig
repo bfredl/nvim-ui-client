@@ -29,4 +29,11 @@ pub fn build(b: *std.Build) !void {
     b.installArtifact(tui_exe);
     const run_tui = b.addRunArtifact(tui_exe);
     tui.dependOn(&run_tui.step);
+    if (@hasField(std.Build, "args")) {
+        if (b.args) |args| {
+            run_tui.addArgs(args);
+        }
+    } else {
+        run_tui.addPassthruArgs();
+    }
 }
