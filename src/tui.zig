@@ -273,19 +273,35 @@ fn handleKeyPress(self: *TUI, k: Parser.Key) void {
         self.enqueueInput(text);
     } else if (k.codepoint < 32) {
         self.enqueueInput(&.{@intCast(k.codepoint)});
-    } else if (k.codepoint >= 127 and k.mods.ctrl == false and k.mods.alt == false and k.mods.shift == false) {
+    } else if (k.codepoint >= 127) {
         const string = switch (k.codepoint) {
             127 => "bs",
+            Key.left => "Left",
+            Key.right => "Right",
+            Key.up => "Up",
+            Key.down => "Down",
             Key.page_up => "PageUp",
             Key.page_down => "PageDown",
             Key.home => "Home",
             Key.end => "End",
+            Key.f1 => "F1",
+            Key.f2 => "F2",
             Key.f3 => "F3",
+            Key.f4 => "F4",
+            Key.f5 => "F5",
+            Key.f6 => "F6",
+            Key.f7 => "F7",
+            Key.f8 => "F8",
+            Key.f9 => "F9",
+            Key.f10 => "F10",
             else => null,
         };
         if (string) |s| {
+            const ctrl = if (k.mods.ctrl) "C-" else "";
+            const shift = if (k.mods.shift) "S-" else "";
+            const alt = if (k.mods.alt) "A-" else "";
             var buf: [128]u8 = undefined;
-            const key = std.fmt.bufPrint(&buf, "<{s}>", .{s}) catch unreachable;
+            const key = std.fmt.bufPrint(&buf, "<{s}{s}{s}{s}>", .{ ctrl, shift, alt, s }) catch unreachable;
             self.enqueueInput(key);
         } else dbg("keypress {}\r\n", .{k});
     } else if (k.mods.ctrl == true and k.mods.alt == false and k.codepoint >= 'a' and k.codepoint <= 'z') {
