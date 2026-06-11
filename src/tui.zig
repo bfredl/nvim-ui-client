@@ -252,17 +252,8 @@ fn ttyReadCb(
 
         const event = result.event orelse continue;
 
-        switch (event) {
-            .key_press => |k| {
-                self.handleKeyPress(k);
-                self.flush_input() catch @panic("RETURN TO SENDER");
-            },
-            .mouse => |m| {
-                self.handleMouse(m);
-                self.flush_input() catch @panic("YOU ARE NOW A NORMAL RAT");
-            },
-            else => dbg("event {}\r\n", .{event}),
-        }
+        // TODO: handle errors on input flooding?
+        try self.handleEvent(event);
     }
 
     if (false and buf.size > 0 and buf[0] == 3) {
@@ -273,12 +264,26 @@ fn ttyReadCb(
     return seq_start;
 }
 
-fn handleKeyPress(self: *TUI, k: Parser.Key) void {
+fn handleEvent(self: *TUI, event: Parser.Event) !void {
+    switch (event) {
+        .key_press => |k| {
+            try self.handleKeyPress(k);
+            try self.flush_input();
+        },
+        .mouse => |m| {
+            try self.handleMouse(m);
+            try self.flush_input();
+        },
+        else => dbg("event {}\r\n", .{event}),
+    }
+}
+
+fn handleKeyPress(self: *TUI, k: Parser.Key) !void {
     const Key = Parser.Key;
     if (k.text) |text| {
-        self.enqueueInput(text);
+        try self.enqueueInput(text);
     } else if (k.codepoint < 32) {
-        self.enqueueInput(&.{@intCast(k.codepoint)});
+        try self.enqueueInput(&.{@intCast(k.codepoint)});
     } else if (k.codepoint >= 127) {
         const string = switch (k.codepoint) {
             127 => "bs",
@@ -308,16 +313,16 @@ fn handleKeyPress(self: *TUI, k: Parser.Key) void {
             const alt = if (k.mods.alt) "A-" else "";
             var buf: [128]u8 = undefined;
             const key = std.fmt.bufPrint(&buf, "<{s}{s}{s}{s}>", .{ ctrl, shift, alt, s }) catch unreachable;
-            self.enqueueInput(key);
+            try self.enqueueInput(key);
         } else dbg("keypress {}", .{k});
     } else if (k.mods.ctrl == true and k.mods.alt == false and k.codepoint >= 'a' and k.codepoint <= 'z') {
-        self.enqueueInput(&.{@intCast(k.codepoint - 'a' + 1)});
+        try self.enqueueInput(&.{@intCast(k.codepoint - 'a' + 1)});
     } else {
         dbg("keypress {}", .{k});
     }
 }
 
-fn handleMouse(self: *TUI, m: Parser.Mouse) void {
+fn handleMouse(self: *TUI, m: Parser.Mouse) !void {
     var buf: [3]u8 = .{ 0, 0, 0 };
     var nmod: usize = 0;
     if (m.mods.ctrl) {
@@ -338,13 +343,13 @@ fn handleMouse(self: *TUI, m: Parser.Mouse) void {
         .left, .middle, .right => {
             if (m.type != .motion) {
                 const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-                RPC.nvim_input_mouse(encoder, @tagName(m.button), @tagName(m.type), mod, 1, m.row, m.col) catch @panic("not cool");
+                try RPC.nvim_input_mouse(encoder, @tagName(m.button), @tagName(m.type), mod, 1, m.row, m.col);
             }
         },
         .wheel_up, .wheel_down, .wheel_right, .wheel_left => {
             if (m.type == .press) {
                 const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-                RPC.nvim_input_mouse(encoder, "wheel", @tagName(m.button)[6..], mod, 1, m.row, m.col) catch @panic("not cool");
+                try RPC.nvim_input_mouse(encoder, "wheel", @tagName(m.button)[6..], mod, 1, m.row, m.col);
             }
         },
         else => {},
@@ -375,10 +380,10 @@ fn flush_input(self: *TUI) !void {
     _ = self.enc_buf.writer.consumeAll();
 }
 
-fn enqueueInput(self: *TUI, str: []const u8) void {
+fn enqueueInput(self: *TUI, str: []const u8) !void {
     // dbg("aha: {s}\n", .{str});
     const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-    RPC.nvim_input(encoder, str) catch @panic("memory error");
+    try RPC.nvim_input(encoder, str);
 }
 
 fn checkResize(self: *TUI) !void {
@@ -387,7 +392,7 @@ fn checkResize(self: *TUI) !void {
         self.winsize = new_size;
 
         const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-        RPC.nvim_ui_try_resize_grid(encoder, 1, self.winsize.col, self.winsize.row) catch @panic("memory error");
+        try RPC.nvim_ui_try_resize_grid(encoder, 1, self.winsize.col, self.winsize.row);
         try self.flush_input();
     }
 }
