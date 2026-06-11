@@ -318,16 +318,37 @@ fn handleKeyPress(self: *TUI, k: Parser.Key) void {
 }
 
 fn handleMouse(self: *TUI, m: Parser.Mouse) void {
+    var buf: [3]u8 = .{ 0, 0, 0 };
+    var nmod: usize = 0;
+    if (m.mods.ctrl) {
+        buf[nmod] = 'c';
+        nmod += 1;
+    }
+    if (m.mods.alt) {
+        buf[nmod] = 'a';
+        nmod += 1;
+    }
+    if (m.mods.shift) {
+        buf[nmod] = 's';
+        nmod += 1;
+    }
+    const mod = buf[0..nmod];
+    dbg("moous {} blev '{s}'", .{ m, mod });
     switch (m.button) {
         .left, .middle, .right => {
             if (m.type != .motion) {
                 const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-                RPC.nvim_input_mouse(encoder, @tagName(m.button), @tagName(m.type), "", 1, m.row, m.col) catch @panic("not cool");
+                RPC.nvim_input_mouse(encoder, @tagName(m.button), @tagName(m.type), mod, 1, m.row, m.col) catch @panic("not cool");
+            }
+        },
+        .wheel_up, .wheel_down, .wheel_right, .wheel_left => {
+            if (m.type == .press) {
+                const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
+                RPC.nvim_input_mouse(encoder, "wheel", @tagName(m.button)[6..], mod, 1, m.row, m.col) catch @panic("not cool");
             }
         },
         else => {},
     }
-    dbg("moous {}", .{m});
 }
 
 fn attach(self: *TUI, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width: u32, height: u32) !void {
