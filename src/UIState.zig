@@ -10,6 +10,7 @@ glyph_cache: std.HashMapUnmanaged(u32, void, std.hash_map.StringIndexContext, st
 attrs: std.ArrayList(Attr) = .empty,
 mode_info: std.ArrayList(ModeInfo) = .empty,
 mode_idx: u32 = 0,
+mouse: bool = false,
 
 cursor: struct { grid: u32, row: u16, col: u16 } = undefined,
 default_colors: struct { fg: RGB, bg: RGB, sp: RGB } = undefined,

@@ -126,6 +126,8 @@ const RedrawEvents = enum {
     win_hide,
     win_close,
     msg_set_pos,
+    mouse_on,
+    mouse_off,
     flush,
 };
 
@@ -406,10 +408,14 @@ fn default_colors_set(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     self.event_calls -= 1;
 }
 
-fn flush(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
+fn skip_args(self: *RPC, base_decoder: *mpack.SkipDecoder) void {
+    // skip entire event_call arg array
     base_decoder.toSkip(1);
     self.event_calls -= 1;
+}
 
+fn flush(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
+    self.skip_args(base_decoder);
     try owner(self).cb_flush();
 }
 
@@ -561,6 +567,16 @@ fn msg_set_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     self.ui.msg = .{ .grid = grid, .row = row, .scrolled = scrolled, .char = try self.ui.intern_glyph(char) };
 }
 
+fn mouse_on(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
+    self.skip_args(base_decoder);
+    self.ui.mouse = true;
+}
+
+fn mouse_off(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
+    self.skip_args(base_decoder);
+    self.ui.mouse = false;
+}
+
 pub fn attach(encoder: mpack.Encoder, width: u32, height: u32, stdin_fd: ?i32, multigrid: bool) !void {
     if (false) {
         try encoder.putArrayHead(4);
@@ -599,7 +615,7 @@ pub fn attach(encoder: mpack.Encoder, width: u32, height: u32, stdin_fd: ?i32, m
     }
 }
 
-pub fn unsafe_input(encoder: mpack.Encoder, input: []const u8) !void {
+pub fn nvim_input(encoder: mpack.Encoder, input: []const u8) !void {
     try encoder.putArrayHead(3);
     try encoder.putInt(2); // notify
     try encoder.putStr("nvim_input");
@@ -607,7 +623,7 @@ pub fn unsafe_input(encoder: mpack.Encoder, input: []const u8) !void {
     try encoder.putStr(input);
 }
 
-pub fn try_resize(encoder: mpack.Encoder, grid: u32, width: u32, height: u32) !void {
+pub fn nvim_ui_try_resize_grid(encoder: mpack.Encoder, grid: u32, width: u32, height: u32) !void {
     try encoder.putArrayHead(3);
     try encoder.putInt(2); // notify
     try encoder.putStr("nvim_ui_try_resize_grid");
@@ -615,4 +631,17 @@ pub fn try_resize(encoder: mpack.Encoder, grid: u32, width: u32, height: u32) !v
     try encoder.putInt(grid);
     try encoder.putInt(width);
     try encoder.putInt(height);
+}
+
+pub fn nvim_input_mouse(encoder: mpack.Encoder, button: []const u8, action: []const u8, modifier: []const u8, grid: u32, row: i32, col: i32) !void {
+    try encoder.putArrayHead(3);
+    try encoder.putInt(2); // notify
+    try encoder.putStr("nvim_input_mouse");
+    try encoder.putArrayHead(6);
+    try encoder.putStr(button);
+    try encoder.putStr(action);
+    try encoder.putStr(modifier);
+    try encoder.putInt(grid);
+    try encoder.putInt(row);
+    try encoder.putInt(col);
 }

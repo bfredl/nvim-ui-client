@@ -48,7 +48,6 @@ render: struct {
     pos_r: u32 = 0,
     pos_c: u32 = 0,
     attr_id: ?u32 = null,
-    cursor_shape: ?UIState.CursorShape = .block,
     const Render = @This();
 
     pub fn print(self: *Render, comptime fmt: []const u8, vals: anytype) !void {
@@ -62,6 +61,11 @@ render: struct {
         try self.print(ctlseqs.cup, .{ row + 1, col + 1 });
     }
 },
+
+tty_state: struct {
+    cursor_shape: ?UIState.CursorShape = .block,
+    mouse_reporting: bool = false,
+} = .{},
 
 decoder: mpack.SkipDecoder = undefined,
 rpc: RPC,
@@ -151,7 +155,6 @@ pub fn main(init: std.process.Init) !void {
         .parser = .{},
         .rpc = try .init(gpa),
         .tty_writer = &writer.interface,
-        // .loop = try xev.Loop.init(.{}),
         .gpa = gpa,
         .io = init.io,
         .enc_buf = .init(gpa),
@@ -210,7 +213,6 @@ pub fn main(init: std.process.Init) !void {
             break;
         }
 
-        // TODO: check EOF
         const tty_buffered = tty_reader.buffered();
         if (tty_buffered.len > tty_available_last) {
             const read = try self.ttyReadCb(tty_buffered);
@@ -254,6 +256,10 @@ fn ttyReadCb(
             .key_press => |k| {
                 self.handleKeyPress(k);
                 self.flush_input() catch @panic("RETURN TO SENDER");
+            },
+            .mouse => |m| {
+                self.handleMouse(m);
+                self.flush_input() catch @panic("YOU ARE NOW A NORMAL RAT");
             },
             else => dbg("event {}\r\n", .{event}),
         }
@@ -303,12 +309,25 @@ fn handleKeyPress(self: *TUI, k: Parser.Key) void {
             var buf: [128]u8 = undefined;
             const key = std.fmt.bufPrint(&buf, "<{s}{s}{s}{s}>", .{ ctrl, shift, alt, s }) catch unreachable;
             self.enqueueInput(key);
-        } else dbg("keypress {}\r\n", .{k});
+        } else dbg("keypress {}", .{k});
     } else if (k.mods.ctrl == true and k.mods.alt == false and k.codepoint >= 'a' and k.codepoint <= 'z') {
         self.enqueueInput(&.{@intCast(k.codepoint - 'a' + 1)});
     } else {
-        dbg("keypress {}\r\n", .{k});
+        dbg("keypress {}", .{k});
     }
+}
+
+fn handleMouse(self: *TUI, m: Parser.Mouse) void {
+    switch (m.button) {
+        .left, .middle, .right => {
+            if (m.type != .motion) {
+                const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
+                RPC.nvim_input_mouse(encoder, @tagName(m.button), @tagName(m.type), "", 1, m.row, m.col) catch @panic("not cool");
+            }
+        },
+        else => {},
+    }
+    dbg("moous {}", .{m});
 }
 
 fn attach(self: *TUI, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width: u32, height: u32) !void {
@@ -338,7 +357,7 @@ fn flush_input(self: *TUI) !void {
 fn enqueueInput(self: *TUI, str: []const u8) void {
     // dbg("aha: {s}\n", .{str});
     const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-    RPC.unsafe_input(encoder, str) catch @panic("memory error");
+    RPC.nvim_input(encoder, str) catch @panic("memory error");
 }
 
 fn checkResize(self: *TUI) !void {
@@ -347,7 +366,7 @@ fn checkResize(self: *TUI) !void {
         self.winsize = new_size;
 
         const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-        RPC.try_resize(encoder, 1, self.winsize.col, self.winsize.row) catch @panic("memory error");
+        RPC.nvim_ui_try_resize_grid(encoder, 1, self.winsize.col, self.winsize.row) catch @panic("memory error");
         try self.flush_input();
     }
 }
@@ -452,29 +471,6 @@ pub fn cb_grid_line(self: *TUI, grid_id: u32, row: u32, start_col: u32, end_col:
     // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?
 }
 
-pub fn put_grid(self: *TUI) !void {
-    // TODO: buffered writing?
-    const tty = self.tty_writer;
-    const ui = &self.rpc.ui;
-    const g = ui.grid(1) orelse return;
-
-    try tty.writeAll(ctlseqs.home);
-    var attr_id: u32 = 0;
-    for (0..g.rows) |row| {
-        const basepos = row * g.cols;
-        for (0..g.cols) |col| {
-            const cell = g.cell.items[basepos + col];
-
-            if (cell.attr_id != attr_id) {
-                attr_id = cell.attr_id;
-                try tty.writeAll(self.attr_slice(attr_id));
-            }
-            try tty.writeAll(ui.text(&cell));
-        }
-        try tty.writeAll("\r\n");
-    }
-}
-
 pub fn cb_flush(self: *TUI) !void {
     const ui = &self.rpc.ui;
     const tty = self.tty_writer;
@@ -488,9 +484,25 @@ pub fn cb_flush(self: *TUI) !void {
     try tty.print(ctlseqs.cup, .{ ui.cursor.row + 1, ui.cursor.col + 1 });
 
     const wanted_shape = ui.mode().cursor_shape;
-    if (wanted_shape != self.render.cursor_shape) {
+    if (wanted_shape != self.tty_state.cursor_shape) {
         try tty.print(ctlseqs.set_cursor_style, .{@intFromEnum(wanted_shape) + 1});
-        self.render.cursor_shape = wanted_shape;
+        self.tty_state.cursor_shape = wanted_shape;
+    }
+    if (ui.mouse != self.tty_state.mouse_reporting) {
+        dbg("CRISIS THEORY: {}", .{ui.mouse});
+        try self.set_dec_mode(.mouse_button_event, ui.mouse);
+        try self.set_dec_mode(.mouse_sgr_ext, ui.mouse);
+        self.tty_state.mouse_reporting = ui.mouse;
     }
     try tty.flush(); // dOn'T fORgEt To fLuSH
+}
+
+const DecMode = enum(u32) {
+    mouse_button_event = 1002,
+    mouse_sgr_ext = 1006,
+    _,
+};
+
+fn set_dec_mode(self: *TUI, mode: DecMode, enabled: bool) !void {
+    try self.tty_writer.print("\x1b[?{}{c}", .{ @intFromEnum(mode), @as(u8, if (enabled) 'h' else 'l') });
 }
