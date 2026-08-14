@@ -97,8 +97,8 @@ fn makeRawTTY(fd: std.posix.fd_t) !std.posix.termios {
     raw.cflag.CSIZE = .CS8;
     raw.cflag.PARENB = false;
 
-    raw.cc[@intFromEnum(std.posix.V.MIN)] = 1;
-    raw.cc[@intFromEnum(std.posix.V.TIME)] = 0;
+    raw.cc[@backingInt(std.posix.V.MIN)] = 1;
+    raw.cc[@backingInt(std.posix.V.TIME)] = 0;
     try std.posix.tcsetattr(fd, .FLUSH, raw);
     return state;
 }
@@ -168,6 +168,12 @@ pub fn main(init: std.process.Init) !void {
 
     try setWinchHandler();
 
+    try self.set_dec_mode(.alt_screen, true);
+    defer {
+        self.set_dec_mode(.alt_screen, false) catch {};
+        self.tty_writer.flush() catch {};
+    }
+
     // try vx.enterAltScreen(ttyw);
     // defer vx.deinit(gpa, ttyw);
 
@@ -230,6 +236,9 @@ pub fn main(init: std.process.Init) !void {
     } else |err| {
         // TODO;
         return err;
+    }
+    if (self.tty_state.mouse_reporting) {
+        try self.set_mouse(false);
     }
 }
 
@@ -511,13 +520,12 @@ pub fn cb_flush(self: *TUI) !void {
 
     const wanted_shape = ui.mode().cursor_shape;
     if (wanted_shape != self.tty_state.cursor_shape) {
-        try tty.print(ctlseqs.set_cursor_style, .{@intFromEnum(wanted_shape) + 1});
+        try tty.print(ctlseqs.set_cursor_style, .{@backingInt(wanted_shape) + 1});
         self.tty_state.cursor_shape = wanted_shape;
     }
     if (ui.mouse != self.tty_state.mouse_reporting) {
         dbg("CRISIS THEORY: {}", .{ui.mouse});
-        try self.set_dec_mode(.mouse_button_event, ui.mouse);
-        try self.set_dec_mode(.mouse_sgr_ext, ui.mouse);
+        try self.set_mouse(ui.mouse);
         self.tty_state.mouse_reporting = ui.mouse;
     }
     try tty.flush(); // dOn'T fORgEt To fLuSH
@@ -526,9 +534,15 @@ pub fn cb_flush(self: *TUI) !void {
 const DecMode = enum(u32) {
     mouse_button_event = 1002,
     mouse_sgr_ext = 1006,
+    alt_screen = 1049,
     _,
 };
 
 fn set_dec_mode(self: *TUI, mode: DecMode, enabled: bool) !void {
-    try self.tty_writer.print("\x1b[?{}{c}", .{ @intFromEnum(mode), @as(u8, if (enabled) 'h' else 'l') });
+    try self.tty_writer.print("\x1b[?{}{c}", .{ @backingInt(mode), @as(u8, if (enabled) 'h' else 'l') });
+}
+
+fn set_mouse(self: *TUI, enabled: bool) !void {
+    try self.set_dec_mode(.mouse_button_event, enabled);
+    try self.set_dec_mode(.mouse_sgr_ext, enabled);
 }
