@@ -136,9 +136,27 @@ pub fn setWinchHandler() !void {
     std.posix.sigaction(std.posix.SIG.WINCH, &act, null);
 }
 
-pub fn main(init: std.process.Init) !void {
+pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     var mega_buffer: [512]u8 = undefined;
+
+    var nvim: ?[]const u8 = null;
+    var argv_rest = init.minimal.args.vector[1..];
+
+    while (argv_rest.len > 0) {
+        const try_arg = std.mem.span(argv_rest[0]);
+        if (!(try_arg.len >= 6 and std.mem.eql(u8, try_arg[0..6], "--tui-"))) {
+            break;
+        }
+        argv_rest = argv_rest[1..];
+        const rest = try_arg[6..];
+        if (std.mem.eql(u8, rest, "noisy")) {
+            is_noisy = true;
+        } else {
+            std.debug.print("unknown arg: {s}\n", .{try_arg});
+            return 1;
+        }
+    }
 
     const tty_fd = 0; // fubbit, do the full fd and /dev/tty dance
 
@@ -180,12 +198,6 @@ pub fn main(init: std.process.Init) !void {
     // XX: encoder will be set with data when it is available
     self.decoder = mpack.SkipDecoder{ .data = undefined };
 
-    var nvim: ?[]const u8 = null;
-    var argv_rest = init.minimal.args.vector[1..];
-    if (argv_rest.len >= 1 and std.mem.eql(u8, std.mem.span(argv_rest[0]), "--tui_noisy")) {
-        is_noisy = true;
-        argv_rest = argv_rest[1..];
-    }
     if (argv_rest.len >= 2 and std.mem.eql(u8, std.mem.span(argv_rest[0]), "--nvim")) {
         nvim = std.mem.span(argv_rest[1]);
         argv_rest = argv_rest[2..];
@@ -240,6 +252,8 @@ pub fn main(init: std.process.Init) !void {
     if (self.tty_state.mouse_reporting) {
         try self.set_mouse(false);
     }
+
+    return 0;
 }
 
 fn ttyReadCb(
