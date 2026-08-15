@@ -600,17 +600,14 @@ pub fn attach(encoder: mpack.Encoder, width: u32, height: u32, stdin_fd: ?i32, m
         try encoder.putInt(width);
         try encoder.putInt(height);
         const EINS: u32 = 1;
-        const items: u32 = 1 + (if (stdin_fd != null) EINS else 0) + (if (multigrid) EINS else 0);
+        const items: u32 = 1 + (if (stdin_fd != null) EINS else 0);
         try encoder.putMapHead(items);
-        try encoder.putStr("ext_linegrid");
+        // multigrid implies "linegrid"
+        try encoder.putStr(if (multigrid) "ext_multigrid" else "ext_linegrid");
         try encoder.putBool(true);
         if (stdin_fd) |fd| {
             try encoder.putStr("stdin_fd");
             try encoder.putInt(fd);
-        }
-        if (multigrid) {
-            try encoder.putStr("ext_multigrid");
-            try encoder.putBool(true);
         }
     }
 }

@@ -25,15 +25,25 @@ pub fn cb_grid_scroll(self: *IOTest, grid: u32, top: u32, bot: u32, left: u32, r
 
 pub fn cb_flush(self: *IOTest) !void {
     self.rpc.ui.dump_grid(1);
+    var it = self.rpc.ui.grids.iterator();
+    while (it.next()) |e| {
+        const g = e.key_ptr.*;
+        const v = e.value_ptr;
+        if (v.info != .none) {
+            if (g != 1) self.rpc.ui.dump_grid(g);
+        }
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
-    var child = try server.spawn(gpa, init.io, null, &[_]?[*:0]const u8{}, null);
+    const argv_rest = init.minimal.args.vector[1..];
+    var child = try server.spawn(gpa, init.io, null, argv_rest, null);
 
     var aw: std.Io.Writer.Allocating = .init(gpa);
     const encoder: mpack.Encoder = .init(&aw.writer);
-    try RPC.attach(encoder, 80, 25, null, false);
+    const multigrid = true;
+    try RPC.attach(encoder, 80, 25, null, multigrid);
 
     var x = aw.toArrayList();
     defer x.deinit(gpa);

@@ -32,8 +32,10 @@ pub fn build(b: *std.Build) !void {
     if (@hasField(std.Build, "args")) {
         if (b.args) |args| {
             run_tui.addArgs(args);
+            run_io_test.addArgs(args);
         }
     } else {
         run_tui.addPassthruArgs();
+        run_io_test.addPassthruArgs();
     }
 }

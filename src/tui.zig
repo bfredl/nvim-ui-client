@@ -143,6 +143,8 @@ pub fn main(init: std.process.Init) !u8 {
     var nvim: ?[]const u8 = null;
     var argv_rest = init.minimal.args.vector[1..];
 
+    var multigrid = false;
+
     while (argv_rest.len > 0) {
         const try_arg = std.mem.span(argv_rest[0]);
         if (!(try_arg.len >= 6 and std.mem.eql(u8, try_arg[0..6], "--tui-"))) {
@@ -152,6 +154,8 @@ pub fn main(init: std.process.Init) !u8 {
         const rest = try_arg[6..];
         if (std.mem.eql(u8, rest, "noisy")) {
             is_noisy = true;
+        } else if (std.mem.eql(u8, rest, "multigrid")) {
+            multigrid = true;
         } else {
             std.debug.print("unknown arg: {s}\n", .{try_arg});
             return 1;
@@ -192,17 +196,14 @@ pub fn main(init: std.process.Init) !u8 {
         self.tty_writer.flush() catch {};
     }
 
-    // try vx.enterAltScreen(ttyw);
-    // defer vx.deinit(gpa, ttyw);
-
-    // XX: encoder will be set with data when it is available
+    // XX: decoder will be set with data when it is available
     self.decoder = mpack.SkipDecoder{ .data = undefined };
 
     if (argv_rest.len >= 2 and std.mem.eql(u8, std.mem.span(argv_rest[0]), "--nvim")) {
         nvim = std.mem.span(argv_rest[1]);
         argv_rest = argv_rest[2..];
     }
-    try self.attach(nvim, argv_rest, self.winsize.col, self.winsize.row);
+    try self.attach(nvim, argv_rest, self.winsize.col, self.winsize.row, multigrid);
     const nvim_read: std.Io.File = self.child.stdout.?;
 
     // WOW they actually implemted something very useful: essentially
@@ -379,7 +380,7 @@ fn handleMouse(self: *TUI, m: Parser.Mouse) !void {
     }
 }
 
-fn attach(self: *TUI, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width: u32, height: u32) !void {
+fn attach(self: *TUI, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width: u32, height: u32, multigrid: bool) !void {
     var the_fd: ?i32 = null;
     if (false) {
         the_fd = try std.posix.dup(0);
@@ -388,7 +389,7 @@ fn attach(self: *TUI, nvim_exe: ?[]const u8, args: []const ?[*:0]const u8, width
     self.child = try server.spawn(self.gpa, self.io, nvim_exe, args, the_fd);
 
     const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
-    try RPC.attach(encoder, width, height, if (the_fd) |_| @as(i32, 3) else null, false);
+    try RPC.attach(encoder, width, height, if (the_fd) |_| @as(i32, 3) else null, multigrid);
     try self.flush_input();
 }
 
