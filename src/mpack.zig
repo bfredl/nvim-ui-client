@@ -125,6 +125,7 @@ const EOFError = error{EOFError};
 // when anything returns `EOFError` the decoder is an unknown state, always needs to be a inner()/consumed() layer deep..
 pub const InnerDecoder = struct {
     data: []const u8,
+    items_after: u32,
 
     fn readBytes(self: *InnerDecoder, size: usize) EOFError![]const u8 {
         if (self.data.len < size) {
@@ -321,7 +322,7 @@ pub const SkipDecoder = struct {
     }
 
     fn rawInner(self: *SkipDecoder) InnerDecoder {
-        return InnerDecoder{ .data = self.data };
+        return InnerDecoder{ .data = self.data, .items_after = 0 };
     }
 
     pub fn inner(self: *SkipDecoder) !InnerDecoder {
@@ -329,8 +330,17 @@ pub const SkipDecoder = struct {
         return self.rawInner();
     }
 
+    pub fn decodeArrayPrefix(self: *SkipDecoder, items: u32) !InnerDecoder {
+        var i = try self.inner();
+        const iarg = try i.expectArray();
+        if (iarg < items) return error.MalformatedRPCMessage;
+        i.items_after = iarg - items;
+        return i;
+    }
+
     pub fn consumed(self: *SkipDecoder, c: InnerDecoder) void {
         self.data = c.data;
+        self.items += c.items_after;
     }
 
     const debugMode = true;
