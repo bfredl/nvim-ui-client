@@ -281,6 +281,14 @@ pub const InnerDecoder = struct {
         return SmallExt{ .kind = hdr.kind, .data = str };
     }
 
+    pub fn expectFloat(self: *InnerDecoder) MpackError!f64 {
+        switch (try self.readHead()) {
+            .Float64 => |val| return val,
+            .Float32 => |val| return val, // suss but what can you do
+            else => return error.UnexpectedTagError,
+        }
+    }
+
     pub fn skipAny(self: *InnerDecoder, nitems: u64) MpackError!void {
         var bytes: u64 = 0;
         var items: u64 = nitems;

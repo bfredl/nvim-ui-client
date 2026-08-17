@@ -123,6 +123,7 @@ const RedrawEvents = enum {
     grid_cursor_goto,
     default_colors_set,
     win_pos,
+    win_float_pos,
     win_hide,
     win_close,
     msg_set_pos,
@@ -513,19 +514,54 @@ fn win_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     const grid: u32 = @intCast(try decoder.expectUInt());
     const win = try decoder.expectExt();
     _ = win; // who cares
-    const row: u32 = @intCast(try decoder.expectUInt());
-    const col: u32 = @intCast(try decoder.expectUInt());
+    const row: u16 = @intCast(try decoder.expectUInt());
+    const col: u16 = @intCast(try decoder.expectUInt());
     const width: u32 = @intCast(try decoder.expectUInt());
     const height: u32 = @intCast(try decoder.expectUInt());
 
-    dbg("window: grid={} at ({},{}) size={},{}\n", .{ grid, row, col, width, height });
+    // dbg("window: grid={} at ({},{}) size={},{}\n", .{ grid, row, col, width, height });
 
-    (try self.ui.put_grid(grid)).info = .{
-        .window = .{ .row = row, .col = col, .width = width, .height = height },
-    };
+    const g = try self.ui.put_grid(grid);
+
+    g.info = .{ .window = .{ .width = width, .height = height } };
+    g.off_c = col;
+    g.off_r = row;
 
     base_decoder.consumed(decoder);
     base_decoder.toSkip(iarg - 6);
+    self.event_calls -= 1;
+}
+
+fn win_float_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
+    var decoder = try base_decoder.inner();
+    const iarg = try decoder.expectArray();
+    if (iarg < 11) return error.MalformatedRPCMessage;
+
+    const grid: u32 = @intCast(try decoder.expectUInt());
+    const win = try decoder.expectExt();
+    _ = win; // who cares
+    const anchor: []const u8 = try decoder.expectString();
+    const anchor_grid: u16 = @intCast(try decoder.expectUInt());
+    const anchor_row = try decoder.expectFloat();
+    const anchor_col = try decoder.expectFloat();
+    const mouse = try decoder.expectBool();
+    const zindex = try decoder.expectUInt();
+    const compindex: u32 = @intCast(try decoder.expectUInt());
+    const off_r: u16 = @intCast(try decoder.expectUInt());
+    const off_c: u16 = @intCast(try decoder.expectUInt());
+
+    _ = anchor;
+    _ = anchor_grid;
+    _ = anchor_row;
+    _ = anchor_col;
+    _ = zindex;
+    const g = try self.ui.put_grid(grid);
+    g.info = .{ .float = .{ .mouse = mouse, .compindex = compindex } };
+    g.off_r = off_r;
+    g.off_c = off_c;
+
+    base_decoder.consumed(decoder);
+    base_decoder.toSkip(iarg - 11);
     self.event_calls -= 1;
 }
 
@@ -535,7 +571,7 @@ fn win_hide(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     if (iarg < 1) return error.MalformatedRPCMessage;
     const grid_id: u32 = @intCast(try decoder.expectUInt());
 
-    dbg("IT's HIDDEN: {}\n", .{grid_id});
+    // dbg("IT's HIDDEN: {}\n", .{grid_id});
     if (self.ui.grid(grid_id)) |grid| {
         grid.info = .none;
     }
@@ -546,7 +582,7 @@ fn win_hide(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 }
 
 fn win_close(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
-    dbg("closed and ", .{});
+    // dbg("closed and ", .{});
     return win_hide(self, base_decoder);
 }
 
@@ -563,7 +599,7 @@ fn msg_set_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     base_decoder.toSkip(iarg - 4);
     self.event_calls -= 1;
 
-    dbg("messages: grid={} at {} scrolled={} char='{s}'\n", .{ grid, row, scrolled, char });
+    // dbg("messages: grid={} at {} scrolled={} char='{s}'\n", .{ grid, row, scrolled, char });
     self.ui.msg = .{ .grid = grid, .row = row, .scrolled = scrolled, .char = try self.ui.intern_glyph(char) };
 }
 

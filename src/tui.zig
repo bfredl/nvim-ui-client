@@ -494,15 +494,18 @@ const invalid_fixme = 0xFFFFFFFF;
 // note: RPC callbacks happen in the nvim read callback. heavy work need to be scheduled..
 pub fn cb_grid_line(self: *TUI, grid_id: u32, row: u32, start_col: u32, end_col: u32) !void {
     // dbg("boll: {} {}, {}-{}\n", .{ grid_id, row, start_col, end_col });
-    _ = grid_id;
+    // if (grid_id > 1) return;
     const render = &self.render;
     const ui = &self.rpc.ui;
-    const g = ui.grid(1) orelse return;
+    const g = ui.grid(grid_id) orelse return;
     const basepos = row * g.cols;
 
-    if (render.buf.writer.end == 0 or render.pos_r != row or render.pos_c != start_col) {
-        try render.cup(row, start_col);
-        render.pos_r = row;
+    const startpos_c = g.off_c + start_col;
+    const pos_r = g.off_r + row;
+
+    if (render.buf.writer.end == 0 or render.pos_r != pos_r or render.pos_c != startpos_c) {
+        try render.cup(pos_r, startpos_c);
+        render.pos_r = pos_r;
     }
 
     var c = start_col;
@@ -515,7 +518,7 @@ pub fn cb_grid_line(self: *TUI, grid_id: u32, row: u32, start_col: u32, end_col:
         }
         try render.put(ui.text(cell));
     }
-    render.pos_c = c;
+    render.pos_c = g.off_c + c;
     render.attr_id = attr_id;
 
     // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?

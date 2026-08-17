@@ -84,12 +84,14 @@ pub const Grid = struct {
     cols: u16 = 0,
     cell: std.ArrayList(Cell) = .empty,
     info: GridInfo = .none,
+    off_r: u16 = 0,
+    off_c: u16 = 0,
 };
 
 pub const GridInfo = union(enum) {
     none: void,
-    window: struct { row: u32, col: u32, width: u32, height: u32 },
-    // float: stuff,
+    window: struct { width: u32, height: u32 },
+    float: struct { mouse: bool, compindex: u32 },
 };
 
 // base charsize
