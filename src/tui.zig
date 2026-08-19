@@ -27,6 +27,11 @@ fn logFn(
 }
 pub const std_options: std.Options = .{ .logFn = logFn };
 
+const RowDamage = struct {
+    start: u32,
+    end: u32,
+};
+
 const TUI = @This();
 
 io: std.Io,
@@ -36,8 +41,12 @@ child: std.process.Child = undefined,
 winsize: std.posix.winsize,
 tty_fd: std.posix.fd_t,
 
+screen_damage: []RowDamage = undefined, // always winsize.row
+temazo: bool = false,
+
 // TODO: reconsider this:
 enc_buf: std.Io.Writer.Allocating,
+tick: usize = 0,
 
 // buf only for cell rendering. high prio messages might be sent directly
 // or use another buf
@@ -136,6 +145,10 @@ pub fn setWinchHandler() !void {
     std.posix.sigaction(std.posix.SIG.WINCH, &act, null);
 }
 
+fn clear_damage(self: *TUI) void {
+    @memset(self.screen_damage, .{ .start = 0x8FFFFFFF, .end = 0 });
+}
+
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     var mega_buffer: [512]u8 = undefined;
@@ -144,6 +157,7 @@ pub fn main(init: std.process.Init) !u8 {
     var argv_rest = init.minimal.args.vector[1..];
 
     var multigrid = false;
+    var temazo = false;
 
     while (argv_rest.len > 0) {
         const try_arg = std.mem.span(argv_rest[0]);
@@ -156,6 +170,8 @@ pub fn main(init: std.process.Init) !u8 {
             is_noisy = true;
         } else if (std.mem.eql(u8, rest, "multigrid")) {
             multigrid = true;
+        } else if (std.mem.eql(u8, rest, "temazo")) {
+            temazo = true;
         } else {
             std.debug.print("unknown arg: {s}\n", .{try_arg});
             return 1;
@@ -183,10 +199,14 @@ pub fn main(init: std.process.Init) !u8 {
         .render = .{ .buf = .init(gpa) },
         .winsize = winsize,
         .tty_fd = tty_fd,
+        .temazo = temazo,
     };
     defer self.rpc.deinit();
     defer self.render.buf.deinit();
     defer self.enc_buf.deinit();
+
+    self.screen_damage = try self.gpa.alloc(RowDamage, winsize.row);
+    self.clear_damage();
 
     try setWinchHandler();
 
@@ -412,8 +432,14 @@ fn enqueueInput(self: *TUI, str: []const u8) !void {
 fn checkResize(self: *TUI) !void {
     const new_size = try getWinsize(self.tty_fd);
     if (new_size.row != self.winsize.row or new_size.col != self.winsize.col) {
+        const new_row = new_size.row != self.winsize.row;
         self.winsize = new_size;
 
+        if (new_row) {
+            self.gpa.free(self.screen_damage);
+            self.screen_damage = try self.gpa.alloc(RowDamage, new_size.row);
+            self.clear_damage();
+        }
         const encoder: mpack.Encoder = .init(&self.enc_buf.writer);
         try RPC.nvim_ui_try_resize_grid(encoder, 1, self.winsize.col, self.winsize.row);
         try self.flush_input();
@@ -491,25 +517,32 @@ pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top_i: u32, bot_i: u32, left_i: 
 const invalid_fixme = 0xFFFFFFFF;
 
 // note: RPC callbacks happen in the nvim read callback. heavy work need to be scheduled..
-pub fn cb_grid_line(self: *TUI, grid_id: u32, row: u32, start_col: u32, end_col: u32) !void {
-    // dbg("boll: {} {}, {}-{}\n", .{ grid_id, row, start_col, end_col });
+pub fn cb_grid_line(self: *TUI, grid_id: u32, row_i: u32, start_col_i: u32, end_col_i: u32) !void {
+    // dbg("boll: {} {}, {}-{}\n", .{ grid_id, row_i, start_col_i, end_col_i });
     // if (grid_id > 1) return;
     const render = &self.render;
     const ui = &self.rpc.ui;
     const g = ui.grid(grid_id) orelse return;
-    const basepos = row * g.cols;
 
-    const startpos_c = g.off_c + start_col;
-    const pos_r = g.off_r + row;
+    const start_col = g.off_c + start_col_i;
+    const end_col = g.off_c + end_col_i;
+    const row = g.off_r + row_i;
 
-    if (render.buf.writer.end == 0 or render.pos_r != pos_r or render.pos_c != startpos_c) {
-        try render.cup(pos_r, startpos_c);
-        render.pos_r = pos_r;
+    if (row < self.screen_damage.len) {
+        const wi = &self.screen_damage[row];
+        wi.start = @min(wi.start, start_col);
+        wi.end = @max(wi.end, end_col);
     }
 
-    var c = start_col;
+    if (render.buf.writer.end == 0 or render.pos_r != row or render.pos_c != start_col) {
+        try render.cup(row, start_col);
+        render.pos_r = row;
+    }
+
+    var c = start_col_i;
     var attr_id = render.attr_id;
-    while (c < end_col) : (c += 1) {
+    const basepos = row_i * g.cols;
+    while (c < end_col_i) : (c += 1) {
         const cell = &g.cell.items[basepos + c];
         if (cell.attr_id != attr_id) {
             attr_id = cell.attr_id;
@@ -526,7 +559,23 @@ pub fn cb_grid_line(self: *TUI, grid_id: u32, row: u32, start_col: u32, end_col:
 pub fn cb_flush(self: *TUI) !void {
     const ui = &self.rpc.ui;
     const tty = self.tty_writer;
+    self.tick += 1;
     try tty.writeAll(ctlseqs.sgr_reset);
+
+    if (self.temazo) {
+        const t = self.tick % 16;
+        for (0.., self.screen_damage) |i, d| {
+            const prot_end = if (i == self.winsize.row - 1) @min(d.end, self.winsize.col - 1) else d.end;
+            if (prot_end > d.start) {
+                try self.render.cup(@intCast(i), d.start);
+                for (0..prot_end - d.start) |_| {
+                    try self.render.print("{x}", .{t});
+                }
+                self.render.pos_r = invalid_fixme;
+            }
+        }
+    }
+    self.clear_damage();
     // dbg("flish: {}\n", .{self.render.buf.writer.end});
     // TODO: want to use the writev trick just like in the C TUI
     try tty.writeAll(self.render.buf.writer.buffered());
