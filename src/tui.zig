@@ -261,7 +261,6 @@ fn ttyReadCb(
     self: *TUI,
     buf: []const u8,
 ) !usize {
-    // dbg("Nommm {}\r\n", .{n});
     var seq_start: usize = 0;
     while (seq_start < buf.len) {
         const result = self.parser.parse(buf[seq_start..buf.len], undefined) catch {
@@ -455,16 +454,16 @@ const enter_lrmm = "\x1b[?69h";
 const exit_lrmm = "\x1b[?69l";
 const smglr = "\x1b[{};{}s";
 
-fn grid(self: *TUI) ?*UIState.Grid {
-    return self.rpc.ui.grid(1);
-}
-
-pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top: u32, bot: u32, left: u32, right: u32, rows: i32) !void {
-    dbg("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid_id, top, bot, left, right, rows });
-    const g = self.grid() orelse return;
+pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top_i: u32, bot_i: u32, left_i: u32, right_i: u32, rows: i32) !void {
+    dbg("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid_id, top_i, bot_i, left_i, right_i, rows });
+    const g = self.rpc.ui.grid(grid_id) orelse return;
     const render = &self.render;
     const top_bot = true;
-    const left_right = left > 0 or right < g.cols;
+
+    const top, const bot = .{ g.off_r + top_i, g.off_r + bot_i };
+    const left, const right = .{ g.off_c + left_i, g.off_c + right_i };
+
+    const left_right = left > 0 or right < self.winsize.col;
 
     if (top_bot) {
         try render.print(csr, .{ top + 1, bot });
@@ -534,7 +533,16 @@ pub fn cb_flush(self: *TUI) !void {
     _ = self.render.buf.writer.consumeAll();
 
     // TODO: only if needed
-    try tty.print(ctlseqs.cup, .{ ui.cursor.row + 1, ui.cursor.col + 1 });
+    const c = ui.cursor;
+    if (ui.grid(c.grid)) |g| {
+        const c_row = g.off_r + c.row;
+        const c_col = g.off_c + c.col;
+        if (c_row != self.render.pos_r or c_col != self.render.pos_c) {
+            try tty.print(ctlseqs.cup, .{ c_row + 1, c_col + 1 });
+            self.render.pos_r = c_row;
+            self.render.pos_c = c_col;
+        }
+    }
 
     const wanted_shape = ui.mode().cursor_shape;
     if (wanted_shape != self.tty_state.cursor_shape) {
@@ -542,7 +550,6 @@ pub fn cb_flush(self: *TUI) !void {
         self.tty_state.cursor_shape = wanted_shape;
     }
     if (ui.mouse != self.tty_state.mouse_reporting) {
-        dbg("CRISIS THEORY: {}", .{ui.mouse});
         try self.set_mouse(ui.mouse);
         self.tty_state.mouse_reporting = ui.mouse;
     }
