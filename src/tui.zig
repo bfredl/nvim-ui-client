@@ -10,6 +10,8 @@ const ctlseqs = struct {
     pub const sgr_reset = "\x1b[m";
     pub const erase_below_cursor = "\x1b[J";
     pub const set_cursor_style = "\x1b[{d} q";
+    pub const to_status_line = "\x1b]0;";
+    pub const from_status_line = "\x07";
 };
 const log = std.log.scoped(.tui);
 const dbg = log.debug;
@@ -554,6 +556,10 @@ pub fn cb_grid_line(self: *TUI, grid_id: u32, row_i: u32, start_col_i: u32, end_
     render.attr_id = attr_id;
 
     // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?
+}
+
+pub fn cb_set_title(self: *TUI, title: []const u8) !void {
+    try self.tty_writer.print("{s}{s}{s}", .{ ctlseqs.to_status_line, title, ctlseqs.from_status_line });
 }
 
 pub fn cb_flush(self: *TUI) !void {

@@ -129,6 +129,7 @@ const RedrawEvents = enum {
     msg_set_pos,
     mouse_on,
     mouse_off,
+    set_title,
     flush,
 };
 
@@ -582,6 +583,17 @@ fn mouse_on(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 fn mouse_off(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     self.skip_args(base_decoder);
     self.ui.mouse = false;
+}
+
+fn set_title(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
+    var decoder = try base_decoder.decodeArrayPrefix(1);
+    // TODO: too loooong for oneshot?
+    const str = try decoder.expectString();
+
+    try owner(self).cb_set_title(str);
+
+    base_decoder.consumed(decoder);
+    self.event_calls -= 1;
 }
 
 pub fn attach(encoder: mpack.Encoder, width: u32, height: u32, stdin_fd: ?i32, multigrid: bool) !void {
