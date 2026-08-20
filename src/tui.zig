@@ -536,26 +536,28 @@ pub fn cb_grid_line(self: *TUI, grid_id: u32, row_i: u32, start_col_i: u32, end_
         wi.end = @max(wi.end, end_col);
     }
 
-    if (render.buf.writer.end == 0 or render.pos_r != row or render.pos_c != start_col) {
-        try render.cup(row, start_col);
-        render.pos_r = row;
-    }
-
-    var c = start_col_i;
-    var attr_id = render.attr_id;
-    const basepos = row_i * g.cols;
-    while (c < end_col_i) : (c += 1) {
-        const cell = &g.cell.items[basepos + c];
-        if (cell.attr_id != attr_id) {
-            attr_id = cell.attr_id;
-            try render.put(self.attr_slice(cell.attr_id));
+    if (!self.temazo) {
+        if (render.buf.writer.end == 0 or render.pos_r != row or render.pos_c != start_col) {
+            try render.cup(row, start_col);
+            render.pos_r = row;
         }
-        try render.put(ui.text(cell));
-    }
-    render.pos_c = g.off_c + c;
-    render.attr_id = attr_id;
 
-    // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?
+        var c = start_col_i;
+        var attr_id = render.attr_id;
+        const basepos = row_i * g.cols;
+        while (c < end_col_i) : (c += 1) {
+            const cell = &g.cell.items[basepos + c];
+            if (cell.attr_id != attr_id) {
+                attr_id = cell.attr_id;
+                try render.put(self.attr_slice(cell.attr_id));
+            }
+            try render.put(ui.text(cell));
+        }
+        render.pos_c = g.off_c + c;
+        render.attr_id = attr_id;
+        // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?
+
+    }
 }
 
 pub fn cb_set_title(self: *TUI, title: []const u8) !void {
@@ -569,15 +571,10 @@ pub fn cb_flush(self: *TUI) !void {
     try tty.writeAll(ctlseqs.sgr_reset);
 
     if (self.temazo) {
-        const t = self.tick % 16;
         for (0.., self.screen_damage) |i, d| {
-            const prot_end = if (i == self.winsize.row - 1) @min(d.end, self.winsize.col - 1) else d.end;
-            if (prot_end > d.start) {
-                try self.render.cup(@intCast(i), d.start);
-                for (0..prot_end - d.start) |_| {
-                    try self.render.print("{x}", .{t});
-                }
-                self.render.pos_r = invalid_fixme;
+            const safe_col = @min(d.end, self.winsize.col);
+            if (safe_col > d.start) {
+                try self.render_segment(@intCast(i), d.start, safe_col);
             }
         }
     }
@@ -609,6 +606,27 @@ pub fn cb_flush(self: *TUI) !void {
         self.tty_state.mouse_reporting = ui.mouse;
     }
     try tty.flush(); // dOn'T fORgEt To fLuSH
+}
+
+fn render_segment(self: *TUI, row: u32, start_col: u32, end_col: u32) !void {
+    const g = self.rpc.ui.grid(1) orelse return;
+    const basepos = row * g.cols;
+
+    const t = self.tick % 16;
+    try self.render.cup(row, start_col);
+    var c = start_col;
+    var attr_id = self.render.attr_id;
+    while (c < end_col) : (c += 1) {
+        const cell = &g.cell.items[basepos + c];
+        if (cell.attr_id != attr_id) {
+            attr_id = cell.attr_id;
+            try self.render.put(self.attr_slice(cell.attr_id));
+        }
+        // try self.render.put(self.rpc.ui.text(cell));
+        try self.render.print("{x}", .{t});
+    }
+    self.render.attr_id = attr_id;
+    self.render.pos_r = invalid_fixme;
 }
 
 const DecMode = enum(u32) {
