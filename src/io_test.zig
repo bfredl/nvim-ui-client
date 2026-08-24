@@ -23,6 +23,11 @@ pub fn cb_grid_scroll(self: *IOTest, grid: u32, top: u32, bot: u32, left: u32, r
     std.debug.print("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid, top, bot, left, right, rows });
 }
 
+pub fn cb_set_title(self: *IOTest, title: []const u8) !void {
+    _ = self;
+    std.debug.print("TITULAR \"{s}\"", .{title});
+}
+
 pub fn cb_flush(self: *IOTest) !void {
     self.rpc.ui.dump_grid(1);
     var it = self.rpc.ui.grids.iterator();

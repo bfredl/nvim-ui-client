@@ -307,7 +307,7 @@ fn grid_resize(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
 
-    try grid.cell.resize(self.ui.gpa, grid.rows * grid.cols);
+    try grid.cell.resize(self.ui.gpa, @as(usize, grid.rows) * grid.cols);
 
     // TODO: not correct for windows, which retain the upper-left
     var char: [UIState.charsize]u8 = undefined;

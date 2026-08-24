@@ -609,24 +609,56 @@ pub fn cb_flush(self: *TUI) !void {
 }
 
 fn render_segment(self: *TUI, row: u32, start_col: u32, end_col: u32) !void {
-    const g = self.rpc.ui.grid(1) orelse return;
-    const basepos = row * g.cols;
-
-    const t = self.tick % 16;
-    try self.render.cup(row, start_col);
-    var c = start_col;
-    var attr_id = self.render.attr_id;
-    while (c < end_col) : (c += 1) {
-        const cell = &g.cell.items[basepos + c];
-        if (cell.attr_id != attr_id) {
-            attr_id = cell.attr_id;
-            try self.render.put(self.attr_slice(cell.attr_id));
-        }
-        // try self.render.put(self.rpc.ui.text(cell));
-        try self.render.print("{x}", .{t});
+    const render = &self.render;
+    if (render.buf.writer.end == 0 or render.pos_r != row or render.pos_c != start_col) {
+        try render.cup(row, start_col);
+        render.pos_r = row;
     }
+    var attr_id = render.attr_id;
+
+    var c = start_col;
+    while (c < end_col) {
+        var cur_base: ?*UIState.Grid = null;
+        var cur_float: ?*UIState.Grid = null;
+        var float_next = false;
+        var it = self.rpc.ui.grids.iterator();
+        while (it.next()) |e| {
+            const g = e.value_ptr;
+            if (!(g.off_r <= row and row < g.off_r + g.rows)) {
+                continue;
+            }
+            const g_endc = g.off_c + g.cols;
+            if (g.off_r <= row and row < g.off_r + g.rows and g.off_c <= c and c < g_endc) {
+                switch (g.info) {
+                    .window => cur_base = g,
+                    .float => |f| if (if (cur_float) |cf| f.compindex > cf.info.float.compindex else true) {
+                        cur_float = g;
+                    },
+                    .none => {},
+                }
+            } else if (g.off_c > c and g.info == .float) {
+                float_next = true;
+            }
+        }
+
+        const g = cur_float orelse cur_base orelse self.rpc.ui.grid(1).?;
+        const end = @min(end_col, g.off_c + g.cols);
+        if (float_next) {} // AKTNING
+
+        const basepos = (row - g.off_r) * g.cols;
+
+        while (c < end) : (c += 1) {
+            const cell = &g.cell.items[basepos + (c - g.off_c)];
+            if (cell.attr_id != attr_id) {
+                attr_id = cell.attr_id;
+                try render.put(self.attr_slice(cell.attr_id));
+            }
+            try render.put(self.rpc.ui.text(cell));
+        }
+    }
+
     self.render.attr_id = attr_id;
-    self.render.pos_r = invalid_fixme;
+    self.render.pos_r = end_col;
 }
 
 const DecMode = enum(u32) {
