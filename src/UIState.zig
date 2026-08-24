@@ -1,7 +1,8 @@
 const std = @import("std");
 const mem = std.mem;
 const UIState = @This();
-const dbg = std.debug.print;
+const log = std.log.scoped(.UIState);
+const dbg = log.debug;
 
 gpa: mem.Allocator,
 attr_arena: std.ArrayList(u8) = .empty,
@@ -173,7 +174,8 @@ pub fn intern_glyph(self: *UIState, str: []const u8) !CellText {
 
 pub fn dump_grid(self: *UIState, id: u32) void {
     var attr_id: u32 = 0;
-    dbg("GRID {} begin ======\n", .{id});
+    const print = std.debug.print;
+    print("GRID {} begin ======\n", .{id});
     const g = self.grid(id) orelse &Grid{};
     for (0..g.rows) |row| {
         const basepos = row * g.cols;
@@ -186,11 +188,11 @@ pub fn dump_grid(self: *UIState, id: u32) void {
                     const islice = self.attrs.items[attr_id];
                     break :theslice self.attr_arena.items[islice.start..islice.end];
                 } else "\x1b[0m";
-                dbg("{s}", .{slice});
+                print("{s}", .{slice});
             }
-            dbg("{s}", .{self.text(&cell)});
+            print("{s}", .{self.text(&cell)});
         }
-        dbg("\r\n", .{});
+        print("\r\n", .{});
     }
-    dbg("\x1b[0mGRID end ======\n", .{});
+    print("\x1b[0mGRID end ======\n", .{});
 }

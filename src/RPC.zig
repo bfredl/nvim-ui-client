@@ -4,7 +4,8 @@ const UIState = @import("./UIState.zig");
 const mem = std.mem;
 const stringToEnum = std.meta.stringToEnum;
 const RPC = @This();
-const dbg = std.debug.print;
+const log = std.log.scoped(.RPC);
+const dbg = log.debug;
 
 const State = enum {
     next_msg,
@@ -79,6 +80,7 @@ fn next_msg(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     if (!std.mem.eql(u8, name, "redraw")) @panic("handle notifications other than 'redraw'");
 
     self.redraw_events = try decoder.expectArray();
+    dbg("begen REDRAW {}", .{self.redraw_events});
     base_decoder.consumed(decoder);
 
     return self.redraw_event(base_decoder);
@@ -95,19 +97,24 @@ fn redraw_event(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.inner();
     const nitems = try decoder.expectArray();
     if (nitems < 1) return error.MalformatedRPCMessage;
+    const n_calls = nitems - 1;
     const name = try decoder.expectString();
 
-    // dbg("EVENT: '{s}' with {}\n", .{ name, nitems - 1 });
+    if (n_calls != 1) {
+        dbg("EVENT: '{s}' with {}", .{ name, n_calls });
+    } else {
+        dbg("EVENT: '{s}'{s}", .{ name, if (mem.eql(u8, name, "flush")) "\n" else "" });
+    }
 
     base_decoder.consumed(decoder);
     self.redraw_events -= 1;
 
     const event = stringToEnum(RedrawEvents, name) orelse {
-        base_decoder.toSkip(nitems - 1);
+        base_decoder.toSkip(n_calls);
         return;
     };
 
-    self.event_calls = nitems - 1;
+    self.event_calls = n_calls;
     self.event = event;
     return redraw_call(self, base_decoder);
 }
@@ -331,6 +338,8 @@ fn grid_clear(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 
     @memset(grid.cell.items, .{ .text = .{ .plain = char }, .attr_id = 0 });
 
+    dbg("clear only {}!", .{grid_id});
+
     try owner(self).cb_grid_clear(@intCast(grid_id));
 }
 
@@ -432,7 +441,7 @@ fn grid_line(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 
         const grid = self.ui.grid(@intCast(grid_id)) orelse return error.InvalidUIState;
 
-        // dbg("with line: {} {} has cells {} and extra {}\n", .{ row, col, ncells, iarg - 4 });
+        dbg("grid {} with line: {} {} has cellpacks {}", .{ grid_id, row, col, ncells });
 
         self.event_state = .{ .cell = .{
             .event_extra_args = iarg - 4,

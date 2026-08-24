@@ -470,10 +470,15 @@ pub fn attr_slice(self: *TUI, id: u32) []const u8 {
 
 pub fn cb_grid_clear(self: *TUI, grid_id: u32) !void {
     _ = self.render.buf.writer.consumeAll();
+    // NB: clear in multigrid mode is HIDEOUS. it will be fixed
+    // by fixing the statusline issue
     if (grid_id != 1) return;
+
     try self.render.put(ctlseqs.home ++ ctlseqs.erase_below_cursor);
     self.render.pos_r = 0;
     self.render.pos_c = 0;
+
+    if (self.temazo) @memset(self.screen_damage, .{ .start = 0, .end = self.winsize.col });
 }
 
 const csr = "\x1b[{};{}r";
@@ -616,36 +621,58 @@ fn render_segment(self: *TUI, row: u32, start_col: u32, end_col: u32) !void {
     }
     var attr_id = render.attr_id;
 
+    // dbg("segment {}: {} to {}", .{ row, start_col, end_col });
+
     var c = start_col;
     while (c < end_col) {
         var cur_base: ?*UIState.Grid = null;
         var cur_float: ?*UIState.Grid = null;
         var float_next = false;
-        var it = self.rpc.ui.grids.iterator();
-        while (it.next()) |e| {
-            const g = e.value_ptr;
-            if (!(g.off_r <= row and row < g.off_r + g.rows)) {
-                continue;
-            }
-            const g_endc = g.off_c + g.cols;
-            if (g.off_r <= row and row < g.off_r + g.rows and g.off_c <= c and c < g_endc) {
-                switch (g.info) {
-                    .window => cur_base = g,
-                    .float => |f| if (if (cur_float) |cf| f.compindex > cf.info.float.compindex else true) {
-                        cur_float = g;
-                    },
-                    .none => {},
+        {
+            var it = self.rpc.ui.grids.iterator();
+            while (it.next()) |e| {
+                const g = e.value_ptr;
+                if (!(g.off_r <= row and row < g.off_r + g.rows)) {
+                    continue;
                 }
-            } else if (g.off_c > c and g.info == .float) {
-                float_next = true;
+                const g_endc = g.off_c + g.cols;
+                if (g.off_c <= c and c < g_endc) {
+                    switch (g.info) {
+                        .window => cur_base = g,
+                        .float => |f| if (if (cur_float) |cf| f.compindex > cf.info.float.compindex else true) {
+                            cur_float = g;
+                        },
+                        .none => {},
+                    }
+                } else if (g.off_c > c and g.info == .float) {
+                    float_next = true;
+                }
             }
         }
 
         const g = cur_float orelse cur_base orelse self.rpc.ui.grid(1).?;
-        const end = @min(end_col, g.off_c + g.cols);
-        if (float_next) {} // AKTNING
+        var end = @min(end_col, g.off_c + g.cols);
+        if (float_next or cur_base == null) {
+            var it = self.rpc.ui.grids.iterator();
+            while (it.next()) |e| {
+                const gi = e.value_ptr;
+                if (!(gi.off_r <= row and row < gi.off_r + gi.rows)) {
+                    continue;
+                }
+                if (gi.off_c > c) {
+                    const splitting = switch (gi.info) {
+                        .window => cur_base == null,
+                        .float => |f| if (cur_float) |cf| f.compindex > cf.info.float.compindex else true,
+                        .none => false,
+                    };
+                    if (splitting) end = @min(end, gi.off_c);
+                }
+            }
+        }
 
         const basepos = (row - g.off_r) * g.cols;
+
+        // dbg("subsegment {} to {}", .{ c, end });
 
         while (c < end) : (c += 1) {
             const cell = &g.cell.items[basepos + (c - g.off_c)];
