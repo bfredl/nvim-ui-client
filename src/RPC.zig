@@ -514,9 +514,15 @@ fn win_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 
     const g = try self.ui.put_grid(grid);
 
+    const old_info = g.info;
+    const old_off_r = g.off_r;
+    const old_off_c = g.off_c;
+
+    try owner(self).cb_grid_info(g, old_info, old_off_r, old_off_c);
     g.info = .{ .window = .{ .width = width, .height = height } };
     g.off_c = col;
     g.off_r = row;
+    try owner(self).cb_grid_info(g, old_info, old_off_r, old_off_c);
 
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
@@ -543,10 +549,16 @@ fn win_float_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     _ = anchor_row;
     _ = anchor_col;
     _ = zindex;
+    // todo: reconcillate this:
     const g = try self.ui.put_grid(grid);
+    const old_info = g.info;
+    const old_off_r = g.off_r;
+    const old_off_c = g.off_c;
+
     g.info = .{ .float = .{ .mouse = mouse, .compindex = compindex } };
     g.off_r = off_r;
     g.off_c = off_c;
+    try owner(self).cb_grid_info(g, old_info, old_off_r, old_off_c);
 
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
@@ -558,7 +570,9 @@ fn win_hide(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 
     // dbg("IT's HIDDEN: {}\n", .{grid_id});
     if (self.ui.grid(grid_id)) |grid| {
+        const old_info = grid.info;
         grid.info = .none;
+        try owner(self).cb_grid_info(grid, old_info, grid.off_r, grid.off_c);
     }
 
     base_decoder.consumed(decoder);
