@@ -484,13 +484,11 @@ const smglr = "\x1b[{};{}s";
 
 fn covered(self: *TUI, g: *UIState.Grid) bool {
     var it = self.rpc.ui.grids.iterator();
-    dbg("COMPAR w: {} {} * {} {}", .{ g.off_r, g.off_r + g.rows, g.off_c, g.off_c + g.cols });
     while (it.next()) |e| {
         const gi = e.value_ptr;
         switch (gi.info) {
             .float => |fi| {
                 if (g.info != .float or g.info.float.compindex < fi.compindex) {
-                    dbg("CONSIDER THIS: {} {} * {} {}", .{ gi.off_r, gi.off_r + gi.rows, gi.off_c, gi.off_c + gi.cols });
                     if (g.off_r + g.rows > gi.off_r and gi.off_r + gi.rows > g.off_r and
                         g.off_c + g.cols > gi.off_c and gi.off_c + gi.cols > g.off_c)
                     {

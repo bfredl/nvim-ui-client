@@ -171,28 +171,3 @@ pub fn intern_glyph(self: *UIState, str: []const u8) !CellText {
         return .{ .indexed = str_index };
     }
 }
-
-pub fn dump_grid(self: *UIState, id: u32) void {
-    var attr_id: u32 = 0;
-    const print = std.debug.print;
-    print("GRID {} begin ======\n", .{id});
-    const g = self.grid(id) orelse &Grid{};
-    for (0..g.rows) |row| {
-        const basepos = row * g.cols;
-        for (0..g.cols) |col| {
-            const cell = g.cell.items[basepos + col];
-
-            if (cell.attr_id != attr_id) {
-                attr_id = cell.attr_id;
-                const slice = if (attr_id > 0) theslice: {
-                    const islice = self.attrs.items[attr_id];
-                    break :theslice self.attr_arena.items[islice.start..islice.end];
-                } else "\x1b[0m";
-                print("{s}", .{slice});
-            }
-            print("{s}", .{self.text(&cell)});
-        }
-        print("\r\n", .{});
-    }
-    print("\x1b[0mGRID end ======\n", .{});
-}
