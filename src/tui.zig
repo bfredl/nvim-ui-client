@@ -44,7 +44,6 @@ winsize: std.posix.winsize,
 tty_fd: std.posix.fd_t,
 
 screen_damage: []RowDamage = undefined, // always winsize.row
-temazo: bool = false,
 
 // TODO: reconsider this:
 enc_buf: std.Io.Writer.Allocating,
@@ -159,7 +158,6 @@ pub fn main(init: std.process.Init) !u8 {
     var argv_rest = init.minimal.args.vector[1..];
 
     var multigrid = false;
-    var temazo = false;
 
     while (argv_rest.len > 0) {
         const try_arg = std.mem.span(argv_rest[0]);
@@ -172,8 +170,6 @@ pub fn main(init: std.process.Init) !u8 {
             is_noisy = true;
         } else if (std.mem.eql(u8, rest, "multigrid")) {
             multigrid = true;
-        } else if (std.mem.eql(u8, rest, "temazo")) {
-            temazo = true;
         } else {
             std.debug.print("unknown arg: {s}\n", .{try_arg});
             return 1;
@@ -201,7 +197,6 @@ pub fn main(init: std.process.Init) !u8 {
         .render = .{ .buf = .init(gpa) },
         .winsize = winsize,
         .tty_fd = tty_fd,
-        .temazo = temazo,
     };
     defer self.rpc.deinit();
     defer self.render.buf.deinit();
@@ -478,7 +473,7 @@ pub fn cb_grid_clear(self: *TUI, grid_id: u32) !void {
     self.render.pos_r = 0;
     self.render.pos_c = 0;
 
-    if (self.temazo) @memset(self.screen_damage, .{ .start = 0, .end = self.winsize.col });
+    @memset(self.screen_damage, .{ .start = 0, .end = self.winsize.col });
 }
 
 const csr = "\x1b[{};{}r";
@@ -487,8 +482,31 @@ const enter_lrmm = "\x1b[?69h";
 const exit_lrmm = "\x1b[?69l";
 const smglr = "\x1b[{};{}s";
 
+fn covered(self: *TUI, g: *UIState.Grid) bool {
+    var it = self.rpc.ui.grids.iterator();
+    dbg("COMPAR w: {} {} * {} {}", .{ g.off_r, g.off_r + g.rows, g.off_c, g.off_c + g.cols });
+    while (it.next()) |e| {
+        const gi = e.value_ptr;
+        switch (gi.info) {
+            .float => |fi| {
+                if (g.info != .float or g.info.float.compindex < fi.compindex) {
+                    dbg("CONSIDER THIS: {} {} * {} {}", .{ gi.off_r, gi.off_r + gi.rows, gi.off_c, gi.off_c + gi.cols });
+                    if (g.off_r + g.rows > gi.off_r and gi.off_r + gi.rows > g.off_r and
+                        g.off_c + g.cols > gi.off_c and gi.off_c + gi.cols > g.off_c)
+                    {
+                        // TODO: check intersection with scroll region like ui_compositor.c does
+                        return true;
+                    }
+                }
+            },
+            else => {},
+        }
+    }
+    return false;
+}
+
 pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top_i: u32, bot_i: u32, left_i: u32, right_i: u32, rows: i32) !void {
-    dbg("scrollen {}: {}-{} X {}-{} delta {}\n", .{ grid_id, top_i, bot_i, left_i, right_i, rows });
+    dbg("scrollen {}: {}-{} X {}-{} delta {}", .{ grid_id, top_i, bot_i, left_i, right_i, rows });
     const g = self.rpc.ui.grid(grid_id) orelse return;
     const render = &self.render;
     const top_bot = true;
@@ -497,6 +515,20 @@ pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top_i: u32, bot_i: u32, left_i: 
     const left, const right = .{ g.off_c + left_i, g.off_c + right_i };
 
     const left_right = left > 0 or right < self.winsize.col;
+
+    const cover = self.covered(g);
+    dbg("was COVERD: {}", .{cover});
+
+    if (cover) {
+        for (top..bot) |row| {
+            if (row < self.screen_damage.len) {
+                const wi = &self.screen_damage[row];
+                wi.start = @min(wi.start, left);
+                wi.end = @max(wi.end, right);
+            }
+        }
+        return;
+    }
 
     if (top_bot) {
         try render.print(csr, .{ top + 1, bot });
@@ -527,7 +559,6 @@ const invalid_fixme = 0xFFFFFFFF;
 pub fn cb_grid_line(self: *TUI, grid_id: u32, row_i: u32, start_col_i: u32, end_col_i: u32) !void {
     // dbg("boll: {} {}, {}-{}\n", .{ grid_id, row_i, start_col_i, end_col_i });
     // if (grid_id > 1) return;
-    const render = &self.render;
     const ui = &self.rpc.ui;
     const g = ui.grid(grid_id) orelse return;
 
@@ -535,38 +566,18 @@ pub fn cb_grid_line(self: *TUI, grid_id: u32, row_i: u32, start_col_i: u32, end_
     const end_col = g.off_c + end_col_i;
     const row = g.off_r + row_i;
 
+    // TODO: we still might a directed rendering path for uncovered grids, so that the terminal
+    // can start eat sequences is in parallell.
     if (row < self.screen_damage.len) {
         const wi = &self.screen_damage[row];
         wi.start = @min(wi.start, start_col);
         wi.end = @max(wi.end, end_col);
     }
-
-    if (!self.temazo) {
-        if (render.buf.writer.end == 0 or render.pos_r != row or render.pos_c != start_col) {
-            try render.cup(row, start_col);
-            render.pos_r = row;
-        }
-
-        var c = start_col_i;
-        var attr_id = render.attr_id;
-        const basepos = row_i * g.cols;
-        while (c < end_col_i) : (c += 1) {
-            const cell = &g.cell.items[basepos + c];
-            if (cell.attr_id != attr_id) {
-                attr_id = cell.attr_id;
-                try render.put(self.attr_slice(cell.attr_id));
-            }
-            try render.put(ui.text(cell));
-        }
-        render.pos_c = g.off_c + c;
-        render.attr_id = attr_id;
-        // TODO: flow control. like check if cell buffer is almost full at the end of nvimReadCb ?
-
-    }
 }
 
 pub fn cb_set_title(self: *TUI, title: []const u8) !void {
-    try self.tty_writer.print("{s}{s}{s}", .{ ctlseqs.to_status_line, title, ctlseqs.from_status_line });
+    const noise = if (is_noisy) "LOOK AT IT: " else "";
+    try self.tty_writer.print("{s}{s}{s}{s}", .{ ctlseqs.to_status_line, noise, title, ctlseqs.from_status_line });
 }
 
 pub fn cb_flush(self: *TUI) !void {
@@ -575,12 +586,10 @@ pub fn cb_flush(self: *TUI) !void {
     self.tick += 1;
     try tty.writeAll(ctlseqs.sgr_reset);
 
-    if (self.temazo) {
-        for (0.., self.screen_damage) |i, d| {
-            const safe_col = @min(d.end, self.winsize.col);
-            if (safe_col > d.start) {
-                try self.render_segment(@intCast(i), d.start, safe_col);
-            }
+    for (0.., self.screen_damage) |i, d| {
+        const safe_col = @min(d.end, self.winsize.col);
+        if (safe_col > d.start) {
+            try self.render_segment(@intCast(i), d.start, safe_col);
         }
     }
     self.clear_damage();
