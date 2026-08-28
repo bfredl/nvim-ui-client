@@ -481,9 +481,28 @@ pub fn cb_grid_info(self: *TUI, grid_id: u32, grid: *UIState.Grid, old_info: UIS
     }
     const moved = grid.off_r != old_off_r or grid.off_c != old_off_c;
 
-    if (old_info == .float and (grid.info != .float or moved)) {
-        self.mark_damaged(old_off_r, old_off_r + grid.rows, old_off_c, old_off_c + grid.cols);
+    switch (old_info) {
+        .float => if (grid.info != .float or moved) {
+            // TODO: rethink this, if we throttle updates to cb_flush we know the new grid size for floats.
+            self.mark_damaged(old_off_r, old_off_r + grid.rows, old_off_c, old_off_c + grid.cols);
+        },
+        .window => |wi| {
+            if (moved) {
+                self.mark_damaged(old_off_r, old_off_r + wi.height, old_off_c, old_off_c + wi.width);
+            } else if (grid.info == .window) {
+                // see TODO above, this is the common case for demo purposes
+                const new_info = grid.info.window;
+                if (wi.height > new_info.height) {
+                    self.mark_damaged(old_off_r + new_info.height, old_off_r + wi.height, old_off_c, old_off_c + wi.width);
+                }
+                if (wi.width > new_info.width) {
+                    self.mark_damaged(old_off_r, old_off_r + wi.height, old_off_c + new_info.width, old_off_c + wi.width);
+                }
+            }
+        },
+        .none => {},
     }
+
     if (old_info != .none and moved) {
         dbg("did a move so: [{} {}] with cols [{} {}]", .{ grid.off_r, grid.off_r + grid.rows, grid.off_c, grid.off_c + grid.cols });
         self.mark_damaged(grid.off_r, grid.off_r + grid.rows, grid.off_c, grid.off_c + grid.cols);

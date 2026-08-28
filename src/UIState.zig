@@ -13,7 +13,7 @@ mode_info: std.ArrayList(ModeInfo) = .empty,
 mode_idx: u32 = 0,
 mouse: bool = false,
 
-cursor: struct { grid: u32, row: u16, col: u16 } = undefined,
+cursor: struct { grid: u32, row: u32, col: u32 } = undefined,
 default_colors: struct { fg: RGB, bg: RGB, sp: RGB } = undefined,
 
 grid_nr: ?u32 = null,
@@ -81,12 +81,12 @@ pub fn get_colors(self: *UIState, a: Attr) struct { RGB, RGB, RGB } {
 }
 
 pub const Grid = struct {
-    rows: u16 = 0,
-    cols: u16 = 0,
+    rows: u32 = 0,
+    cols: u32 = 0,
     cell: std.ArrayList(Cell) = .empty,
     info: GridInfo = .none,
-    off_r: u16 = 0,
-    off_c: u16 = 0,
+    off_r: u32 = 0,
+    off_c: u32 = 0,
 };
 
 pub const GridInfo = union(enum) {

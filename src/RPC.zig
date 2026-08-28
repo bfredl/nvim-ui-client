@@ -306,8 +306,8 @@ fn mode_change(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 fn grid_resize(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.decodeArrayPrefix(3);
     const grid_id = try decoder.expectUInt();
-    const new_cols: u16 = @intCast(try decoder.expectUInt());
-    const new_rows: u16 = @intCast(try decoder.expectUInt());
+    const new_cols: u32 = @intCast(try decoder.expectUInt());
+    const new_rows: u32 = @intCast(try decoder.expectUInt());
 
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
@@ -397,8 +397,8 @@ fn grid_scroll(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 fn grid_cursor_goto(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.decodeArrayPrefix(3);
     const grid_id: u32 = @intCast(try decoder.expectUInt());
-    const row: u16 = @intCast(try decoder.expectUInt());
-    const col: u16 = @intCast(try decoder.expectUInt());
+    const row: u32 = @intCast(try decoder.expectUInt());
+    const col: u32 = @intCast(try decoder.expectUInt());
 
     self.ui.cursor = .{ .grid = grid_id, .row = row, .col = col };
 
@@ -521,8 +521,8 @@ fn win_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     const grid: u32 = @intCast(try decoder.expectUInt());
     const win = try decoder.expectExt();
     _ = win; // who cares
-    const row: u16 = @intCast(try decoder.expectUInt());
-    const col: u16 = @intCast(try decoder.expectUInt());
+    const row: u32 = @intCast(try decoder.expectUInt());
+    const col: u32 = @intCast(try decoder.expectUInt());
     const width: u32 = @intCast(try decoder.expectUInt());
     const height: u32 = @intCast(try decoder.expectUInt());
 
@@ -556,8 +556,8 @@ fn win_float_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     const mouse = try decoder.expectBool();
     const zindex = try decoder.expectUInt();
     const compindex: u32 = @intCast(try decoder.expectUInt());
-    const off_r: u16 = @intCast(try decoder.expectUInt());
-    const off_c: u16 = @intCast(try decoder.expectUInt());
+    const off_r: u32 = @intCast(try decoder.expectUInt());
+    const off_c: u32 = @intCast(try decoder.expectUInt());
 
     _ = anchor;
     _ = anchor_grid;
