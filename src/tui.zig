@@ -82,6 +82,8 @@ rpc: RPC,
 tty_writer: *std.Io.Writer,
 
 var pending_winch: bool = false;
+var cancelable_multireader: ?*std.Io.File.MultiReader = null;
+var io_for_cancelling: std.Io = undefined;
 
 fn makeRawTTY(fd: std.posix.fd_t) !std.posix.termios {
     const state = try std.posix.tcgetattr(fd);
@@ -132,6 +134,10 @@ fn handleWinch(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*
     _ = info;
     _ = ctx_ptr;
     pending_winch = true;
+    dbg("DELIVER", .{});
+    if (cancelable_multireader) |mr| {
+        mr.batch.cancel(io_for_cancelling);
+    }
 }
 
 pub fn setWinchHandler() !void {
@@ -241,13 +247,27 @@ pub fn main(init: std.process.Init) !u8 {
     multi_reader.init(gpa, init.io, multi_reader_buffer.toStreams(), &.{ nvim_read, tty_read });
     defer multi_reader.deinit();
 
+    io_for_cancelling = init.io;
+    cancelable_multireader = &multi_reader;
+
     const nvim_reader = multi_reader.reader(0);
     const tty_reader = multi_reader.reader(1);
     const nvim_context = &multi_reader.streams.contexts()[0];
 
     var tty_available_last: usize = 0;
     var nvim_available_last: usize = 0;
-    while (multi_reader.fill(256, .none)) |_| {
+    while (true) {
+        multi_reader.fill(256, .none) catch |err| switch (err) {
+            error.Canceled => {
+                dbg("håååga", .{});
+                if (pending_winch) {
+                    pending_winch = false;
+                    try self.checkResize();
+                }
+                continue;
+            },
+            else => |e| return e,
+        };
         const nvim_buffered = nvim_reader.buffered();
         if (nvim_buffered.len > nvim_available_last) {
             const read = self.nvimReadCb(nvim_buffered);
@@ -273,9 +293,6 @@ pub fn main(init: std.process.Init) !u8 {
             pending_winch = false;
             try self.checkResize();
         }
-    } else |err| {
-        // TODO;
-        return err;
     }
     if (self.tty_state.mouse_reporting) {
         try self.set_mouse(false);
