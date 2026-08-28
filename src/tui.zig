@@ -150,6 +150,16 @@ fn clear_damage(self: *TUI) void {
     @memset(self.screen_damage, .{ .start = 0x8FFFFFFF, .end = 0 });
 }
 
+fn mark_damaged(self: *TUI, top: u32, bot: u32, left: u32, right: u32) void {
+    for (top..bot) |row| {
+        if (row < self.screen_damage.len) {
+            const wi = &self.screen_damage[row];
+            wi.start = @min(wi.start, left);
+            wi.end = @max(wi.end, right);
+        }
+    }
+}
+
 pub fn main(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     var mega_buffer: [512]u8 = undefined;
@@ -463,6 +473,23 @@ pub fn attr_slice(self: *TUI, id: u32) []const u8 {
     return ctlseqs.sgr_reset;
 }
 
+pub fn cb_grid_info(self: *TUI, grid_id: u32, grid: *UIState.Grid, old_info: UIState.GridInfo, old_off_r: u32, old_off_c: u32) !void {
+    dbg("HOW DARE YOU: {} changed from {s} to {s}", .{ grid_id, @tagName(old_info), @tagName(grid.info) });
+    switch (grid.info) {
+        .float => |fi| dbg("{} at (r={} c={})", .{ fi, grid.off_r, grid.off_c }),
+        else => {},
+    }
+    const moved = grid.off_r != old_off_r or grid.off_c != old_off_c;
+
+    if (old_info == .float and (grid.info != .float or moved)) {
+        self.mark_damaged(old_off_r, old_off_r + grid.rows, old_off_c, old_off_c + grid.cols);
+    }
+    if (old_info != .none and moved) {
+        dbg("did a move so: [{} {}] with cols [{} {}]", .{ grid.off_r, grid.off_r + grid.rows, grid.off_c, grid.off_c + grid.cols });
+        self.mark_damaged(grid.off_r, grid.off_r + grid.rows, grid.off_c, grid.off_c + grid.cols);
+    }
+}
+
 pub fn cb_grid_clear(self: *TUI, grid_id: u32) !void {
     _ = self.render.buf.writer.consumeAll();
     // NB: clear in multigrid mode is HIDEOUS. it will be fixed
@@ -518,13 +545,7 @@ pub fn cb_grid_scroll(self: *TUI, grid_id: u32, top_i: u32, bot_i: u32, left_i: 
     dbg("was COVERD: {}", .{cover});
 
     if (cover) {
-        for (top..bot) |row| {
-            if (row < self.screen_damage.len) {
-                const wi = &self.screen_damage[row];
-                wi.start = @min(wi.start, left);
-                wi.end = @max(wi.end, right);
-            }
-        }
+        self.mark_damaged(top, bot, left, right);
         return;
     }
 

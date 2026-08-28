@@ -306,21 +306,37 @@ fn mode_change(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
 fn grid_resize(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     var decoder = try base_decoder.decodeArrayPrefix(3);
     const grid_id = try decoder.expectUInt();
-
-    const grid = try self.ui.put_grid(@intCast(grid_id));
-    grid.cols = @intCast(try decoder.expectUInt());
-    grid.rows = @intCast(try decoder.expectUInt());
+    const new_cols: u16 = @intCast(try decoder.expectUInt());
+    const new_rows: u16 = @intCast(try decoder.expectUInt());
 
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
 
-    try grid.cell.resize(self.ui.gpa, @as(usize, grid.rows) * grid.cols);
+    const grid = try self.ui.put_grid(@intCast(grid_id));
 
-    // TODO: not correct for windows, which retain the upper-left
-    var char: [UIState.charsize]u8 = undefined;
-    char[0] = ' ';
-    char[1] = 0;
-    @memset(grid.cell.items, .{ .text = .{ .plain = char }, .attr_id = 0 });
+    // this a little magic, a fourth "keepcopy" arg would be helpful
+    if (grid_id > 1 and grid.cols * grid.rows > 0) {
+        // TODO: expand/contract in place, BECAUSE I CAN
+        const copy_rows = @min(grid.rows, new_rows);
+        const copy_cols = @min(grid.cols, new_cols);
+        const new_cells = try self.ui.gpa.alloc(UIState.Cell, @as(usize, new_rows) * new_cols);
+        for (0..copy_rows) |row| {
+            @memcpy(new_cells[row * new_cols ..][0..copy_cols], grid.cell.items[row * grid.cols ..][0..copy_cols]);
+        }
+        grid.cell.deinit(self.ui.gpa);
+        grid.cell = .fromOwnedSlice(new_cells);
+    } else {
+        try grid.cell.resize(self.ui.gpa, @as(usize, new_rows) * new_cols);
+
+        // TODO: not correct for windows, which retain the upper-left
+        var char: [UIState.charsize]u8 = undefined;
+        char[0] = ' ';
+        char[1] = 0;
+        @memset(grid.cell.items, .{ .text = .{ .plain = char }, .attr_id = 0 });
+    }
+
+    grid.cols = new_cols;
+    grid.rows = new_rows;
 }
 
 fn grid_clear(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
@@ -518,11 +534,10 @@ fn win_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     const old_off_r = g.off_r;
     const old_off_c = g.off_c;
 
-    try owner(self).cb_grid_info(g, old_info, old_off_r, old_off_c);
     g.info = .{ .window = .{ .width = width, .height = height } };
     g.off_c = col;
     g.off_r = row;
-    try owner(self).cb_grid_info(g, old_info, old_off_r, old_off_c);
+    try owner(self).cb_grid_info(grid, g, old_info, old_off_r, old_off_c);
 
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
@@ -558,7 +573,7 @@ fn win_float_pos(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     g.info = .{ .float = .{ .mouse = mouse, .compindex = compindex } };
     g.off_r = off_r;
     g.off_c = off_c;
-    try owner(self).cb_grid_info(g, old_info, old_off_r, old_off_c);
+    try owner(self).cb_grid_info(grid, g, old_info, old_off_r, old_off_c);
 
     base_decoder.consumed(decoder);
     self.event_calls -= 1;
@@ -572,7 +587,7 @@ fn win_hide(self: *RPC, base_decoder: *mpack.SkipDecoder) !void {
     if (self.ui.grid(grid_id)) |grid| {
         const old_info = grid.info;
         grid.info = .none;
-        try owner(self).cb_grid_info(grid, old_info, grid.off_r, grid.off_c);
+        try owner(self).cb_grid_info(grid_id, grid, old_info, grid.off_r, grid.off_c);
     }
 
     base_decoder.consumed(decoder);
