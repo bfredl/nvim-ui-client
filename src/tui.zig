@@ -82,6 +82,7 @@ rpc: RPC,
 tty_writer: *std.Io.Writer,
 
 var pending_winch: bool = false;
+var winch_pipe: std.posix.fd_t = undefined;
 
 fn makeRawTTY(fd: std.posix.fd_t) !std.posix.termios {
     const state = try std.posix.tcgetattr(fd);
@@ -131,7 +132,10 @@ fn handleWinch(sig: std.posix.SIG, info: *const std.posix.siginfo_t, ctx_ptr: ?*
     _ = sig;
     _ = info;
     _ = ctx_ptr;
-    pending_winch = true;
+    if (pending_winch == false) {
+        pending_winch = true;
+        _ = std.posix.system.write(winch_pipe, " ", 1);
+    }
 }
 
 pub fn setWinchHandler() !void {
@@ -215,6 +219,9 @@ pub fn main(init: std.process.Init) !u8 {
     self.screen_damage = try self.gpa.alloc(RowDamage, winsize.row);
     self.clear_damage();
 
+    const pipa = try std.Io.Threaded.pipe2(.{ .CLOEXEC = true });
+    winch_pipe = pipa[1]; // write end
+
     try setWinchHandler();
 
     try self.set_dec_mode(.alt_screen, true);
@@ -233,16 +240,19 @@ pub fn main(init: std.process.Init) !u8 {
     try self.attach(nvim, argv_rest, self.winsize.col, self.winsize.row, multigrid);
     const nvim_read: std.Io.File = self.child.stdout.?;
 
+    const pipa_read: std.Io.File = .{ .handle = pipa[0], .flags = .{ .nonblocking = false } };
+
     // WOW they actually implemted something very useful: essentially
     // a mini-event loop which "just" tracks N fd:s and a resizing
     // buffer for each, GOOD JOB ZIG CORE DEVS:)
-    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(2) = undefined;
+    var multi_reader_buffer: std.Io.File.MultiReader.Buffer(3) = undefined;
     var multi_reader: std.Io.File.MultiReader = undefined;
-    multi_reader.init(gpa, init.io, multi_reader_buffer.toStreams(), &.{ nvim_read, tty_read });
+    multi_reader.init(gpa, init.io, multi_reader_buffer.toStreams(), &.{ nvim_read, tty_read, pipa_read });
     defer multi_reader.deinit();
 
     const nvim_reader = multi_reader.reader(0);
     const tty_reader = multi_reader.reader(1);
+    const pipa_reader = multi_reader.reader(2);
     const nvim_context = &multi_reader.streams.contexts()[0];
 
     var tty_available_last: usize = 0;
@@ -266,7 +276,13 @@ pub fn main(init: std.process.Init) !u8 {
             tty_available_last = tty_reader.bufferedLen();
         }
 
-        // too late but whatever
+        // TODO: do something smart, like allow multi_reader.fill() to be interuppted by
+        // a signal (it is possible but then it fails on the next fill() )
+        const pipa_buffered = pipa_reader.buffered();
+        if (pipa_buffered.len > 0) {
+            pipa_reader.toss(pipa_buffered.len);
+        }
+
         if (pending_winch) {
             // XXX: this is a bit of a hack. preferably the event loop should natively
             // handle signals as events
