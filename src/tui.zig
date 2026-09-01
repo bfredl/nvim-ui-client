@@ -347,7 +347,11 @@ fn handleEvent(self: *TUI, event: Parser.Event) !void {
 fn handleKeyPress(self: *TUI, k: Parser.Key) !void {
     const Key = Parser.Key;
     if (k.text) |text| {
-        try self.enqueueInput(text);
+        if (std.mem.eql(u8, text, "<")) {
+            try self.enqueueInput("<lt>");
+        } else {
+            try self.enqueueInput(text);
+        }
     } else if (k.codepoint < 32) {
         try self.enqueueInput(&.{@intCast(k.codepoint)});
     } else if (k.codepoint >= 127) {
